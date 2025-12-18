@@ -1,4 +1,5 @@
-import { collection, addDoc, serverTimestamp, getDb } from '../firebase'
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore'
+import { getDb } from '../firebase'
 
 export const logChange = async (type, action, description, details = null, user = 'Unknown') => {
     try {

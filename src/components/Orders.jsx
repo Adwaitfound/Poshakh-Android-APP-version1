@@ -3,6 +3,8 @@ import { Scissors, Clipboard, X, Trash2, Truck, Package, AlertCircle, ChevronDow
 import { getDb } from '../firebase'
 import { collection, addDoc, serverTimestamp, updateDoc, doc, increment } from 'firebase/firestore'
 import { FABRICS_COLLECTION, ORDERS_COLLECTION } from '../lib/utils'
+import { useNotification } from '../context/NotificationProvider'
+import { logOrderCreated, logOrderStatusChanged, logStockAdjusted } from '../lib/notificationLogger'
 
 export default function Orders({
     allOrders = [],
@@ -25,6 +27,7 @@ export default function Orders({
     const [orderSort, setOrderSort] = useState('date_desc')
     const [isUploading, setIsUploading] = useState(false)
     const [expandedSections, setExpandedSections] = useState({ batches: false, stock: false, production: false })
+    const { notify } = useNotification()
 
     const fabricOptions = useMemo(() => inventoryItems.filter(i => i.type === 'fabric' && i.currentLength > 0), [inventoryItems])
     const outfitOptions = useMemo(() => inventoryItems.filter(i => i.type === 'outfit'), [inventoryItems])
@@ -123,8 +126,16 @@ export default function Orders({
             await Promise.all(promises)
             setProductionQueue([])
             if (onDataChanged) await onDataChanged()
+
+            // Log to notifications
+            for (const item of productionQueue) {
+                await logOrderCreated(item.orderNumber, item.customerName || 'N/A', userProfile?.name)
+            }
+
+            notify.success(`✅ Added ${productionQueue.length} order(s) to production`)
         } catch (err) {
             console.error('Batch submit error:', err)
+            notify.error('Failed to add orders to production')
         }
         setIsUploading(false)
     }
@@ -269,9 +280,10 @@ export default function Orders({
 
             setStockOrderForm({ orderNumber: '', outfitId: '', size: 'M', quantity: '1', customerName: '', phone: '', address: '' })
             if (onDataChanged) await onDataChanged()
+            notify.success(`✅ Order #${orderNumber} created! ${qty}x ${outfit.name} (${size})`)
         } catch (error) {
             console.error('Stock order error:', error)
-            alert('Error creating order: ' + error.message)
+            notify.error('Error creating order: ' + error.message)
         } finally {
             setIsUploading(false)
         }

@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react'
 import { getDb } from '../firebase'
 import { doc, updateDoc, serverTimestamp, increment } from 'firebase/firestore'
+import { logInventoryAdded } from '../lib/notificationLogger'
 
-export default function ReceiveProductionModal({ visible, batch, onClose, onDataChanged, inventoryItems = [] }) {
+export default function ReceiveProductionModal({ visible, batch, onClose, onDataChanged, inventoryItems = [], userProfile }) {
     const [receivedQty, setReceivedQty] = useState({
         S: '',
         M: '',
@@ -101,6 +102,11 @@ export default function ReceiveProductionModal({ visible, batch, onClose, onData
                     productionCostPerPiece: batch.totalCostPerPiece || 0,
                     updatedAt: serverTimestamp()
                 })
+            }
+
+            // Log production received
+            if (status === 'Completed') {
+                await logInventoryAdded(`${batch.outfitName} Received (${totalReceived} pieces)`, 'outfit', userProfile?.name || 'Unknown')
             }
 
             const message = status === 'Completed'

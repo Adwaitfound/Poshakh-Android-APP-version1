@@ -2,8 +2,9 @@ import React, { useState } from 'react'
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore'
 import { getDb } from '../firebase'
 import { FABRICS_COLLECTION } from '../lib/utils'
+import { logInventoryAdded } from '../lib/notificationLogger'
 
-export default function AddItem({ onSuccess, onDataChanged }) {
+export default function AddItem({ onSuccess, onDataChanged, userProfile }) {
     const [addItemType, setAddItemType] = useState('fabric')
     const [newItem, setNewItem] = useState({
         name: '', websiteProductName: '', totalLength: '', unit: 'meters',
@@ -49,6 +50,8 @@ export default function AddItem({ onSuccess, onDataChanged }) {
             }
             const db = getDb()
             await addDoc(collection(db, FABRICS_COLLECTION), docData)
+            // Log inventory item added
+            await logInventoryAdded(newItem.name, addItemType, userProfile?.name || 'Unknown')
             setNewItem({ name: '', websiteProductName: '', totalLength: '', unit: 'meters', lengthRequiredPerOutfit: '', costPerMeter: '', parentFabricId: '', stockBreakdown: { S: 0, M: 0, L: 0, XL: 0, XXL: 0 }, location: '', stitchingCost: '', sellingPrice: '' })
             setNewImageFile(null)
             if (onDataChanged) await onDataChanged()

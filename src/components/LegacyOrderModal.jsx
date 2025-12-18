@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { getDb } from '../firebase'
 import { doc, updateDoc, serverTimestamp, addDoc, collection, increment } from 'firebase/firestore'
 import { FABRICS_COLLECTION, ORDERS_COLLECTION } from '../lib/utils'
+import { logOrderCreated, logOrderStatusChanged } from '../lib/notificationLogger'
 
 export default function LegacyOrderModal({ visible, inventoryItems = [], userProfile, onClose, onDataChanged, editOrder = null, initialForm = null }) {
     const [form, setForm] = useState(initialForm || {
@@ -135,8 +136,14 @@ export default function LegacyOrderModal({ visible, inventoryItems = [], userPro
                     ...orderData,
                     updatedAt: serverTimestamp()
                 })
+                // Log status change if status was updated
+                if (editOrder.status !== status) {
+                    await logOrderStatusChanged(orderNumber, status, userProfile?.name || 'Unknown')
+                }
             } else {
                 await addDoc(collection(db, ORDERS_COLLECTION), orderData)
+                // Log new order creation
+                await logOrderCreated(orderNumber, customerName, userProfile?.name || 'Unknown')
             }
 
             // Reset form

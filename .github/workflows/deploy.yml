@@ -1,0 +1,50 @@
+name: Build & Deploy to Firebase Hosting
+
+on:
+  push:
+    branches: [main, release/**]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build web assets
+        run: npm run build
+      
+      - name: Deploy to Firebase Hosting
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_POSHAKH_STOCK }}
+          projectId: poshakh-stock
+          channelId: ${{ github.event_name == 'pull_request' && github.event.number || 'live' }}
+        env:
+          FIREBASE_CLI_EXPERIMENTS: webframeworks
+      
+      - name: Comment PR with preview URL
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const previewUrl = `https://${{ github.event.number }}---poshakh-stock.web.app`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `✅ Preview ready: [${previewUrl}](${previewUrl})`
+            });

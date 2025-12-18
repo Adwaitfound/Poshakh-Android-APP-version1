@@ -2,8 +2,9 @@ import React, { useState } from 'react'
 import { getDb } from '../firebase'
 import { doc, deleteDoc } from 'firebase/firestore'
 import { ORDERS_COLLECTION } from '../lib/utils'
+import { logOrderStatusChanged } from '../lib/notificationLogger'
 
-export default function DeleteConfirmModal({ visible, orderId, onClose, onDataChanged }) {
+export default function DeleteConfirmModal({ visible, orderId, orderNumber, customerName, userProfile, onClose, onDataChanged }) {
     const [password, setPassword] = useState('')
     const [error, setError] = useState('')
     const [isDeleting, setIsDeleting] = useState(false)
@@ -25,6 +26,8 @@ export default function DeleteConfirmModal({ visible, orderId, onClose, onDataCh
         try {
             const db = getDb()
             await deleteDoc(doc(db, ORDERS_COLLECTION, orderId))
+            // Log order deletion
+            await logOrderStatusChanged(orderNumber || orderId, 'Deleted', userProfile?.name || 'Unknown')
             setPassword('')
             if (onDataChanged) await onDataChanged()
             onClose()

@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { getDb } from '../firebase'
 import { doc, updateDoc, serverTimestamp, addDoc, collection } from 'firebase/firestore'
 import { FABRICS_COLLECTION } from '../lib/utils'
+import { logStockAdjusted } from '../lib/notificationLogger'
 
 export default function StockAdjustModal({ item, type, onClose, userProfile, onDataChanged }) {
     const [amount, setAmount] = useState('')
@@ -66,6 +67,10 @@ export default function StockAdjustModal({ item, type, onClose, userProfile, onD
             }
             setAmount('')
             if (onDataChanged) await onDataChanged()
+
+            // Log the stock adjustment
+            await logStockAdjusted(item.name, type, amt, userProfile?.name)
+
             onClose()
         } catch (e) {
             console.error(e)

@@ -2,8 +2,9 @@ import React, { useState } from 'react'
 import { getDb } from '../firebase'
 import { doc, updateDoc, serverTimestamp } from 'firebase/firestore'
 import { ORDERS_COLLECTION } from '../lib/utils'
+import { logOrderStatusChanged } from '../lib/notificationLogger'
 
-export default function ShippingModal({ visible, orderId, onClose, onDataChanged }) {
+export default function ShippingModal({ visible, orderId, orderNumber, userProfile, onClose, onDataChanged }) {
     const [form, setForm] = useState({ sellingPrice: '', shippingCost: '', otherExpenses: '' })
     const [error, setError] = useState('')
     const [isSubmitting, setIsSubmitting] = useState(false)
@@ -29,6 +30,8 @@ export default function ShippingModal({ visible, orderId, onClose, onDataChanged
                 otherExpenses: parseFloat(form.otherExpenses) || 0,
                 updatedAt: serverTimestamp()
             })
+            // Log order shipped
+            await logOrderStatusChanged(orderNumber || orderId, 'Order Shipped (Completed)', userProfile?.name || 'Unknown')
             setForm({ sellingPrice: '', shippingCost: '', otherExpenses: '' })
             if (onDataChanged) await onDataChanged()
             onClose()

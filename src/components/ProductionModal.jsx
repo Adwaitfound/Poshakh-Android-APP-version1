@@ -2,8 +2,9 @@ import React, { useState, useMemo } from 'react'
 import { X } from 'lucide-react'
 import { getDb } from '../firebase'
 import { collection, addDoc, serverTimestamp, updateDoc, doc, increment } from 'firebase/firestore'
+import { logInventoryAdded } from '../lib/notificationLogger'
 
-export default function ProductionModal({ visible, onClose, inventoryItems = [], onDataChanged }) {
+export default function ProductionModal({ visible, onClose, inventoryItems = [], onDataChanged, userProfile }) {
     const [form, setForm] = useState({
         fabricId: '',
         outfitId: '',
@@ -163,6 +164,9 @@ export default function ProductionModal({ visible, onClose, inventoryItems = [],
                     productionCostPerPiece: totalCostPerPiece
                 })
             }
+
+            // Log production batch created
+            await logInventoryAdded(`${selectedOutfit.name} (Production)`, 'outfit', userProfile?.name || 'Unknown')
 
             const statusMsg = form.receivedDate
                 ? `✅ Production batch completed!\n${totalPieces} pieces added to inventory\n${fabricUsed}m deducted from fabric`

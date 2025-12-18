@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState } from 'react'
+import { logLogin } from '../lib/notificationLogger'
 
 const AuthContext = createContext()
 
@@ -39,6 +40,14 @@ export function AuthProvider({ children }) {
 
             setUserProfile(user)
             localStorage.setItem('poshakh-user', JSON.stringify(user))
+
+            // Log the login
+            try {
+                await logLogin(normalizedName)
+            } catch (e) {
+                console.warn('Failed to log login:', e)
+            }
+
             return { ok: true }
         } finally {
             setIsTransitioning(false)

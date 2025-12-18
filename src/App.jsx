@@ -13,6 +13,9 @@ import ReceiveProductionModal from './components/ReceiveProductionModal'
 import { AuthProvider, useAuth } from './context/AuthProvider'
 import ErrorBoundary from './components/ErrorBoundary'
 import TabBoundary from './components/TabBoundary'
+import { NotificationProvider } from './context/NotificationProvider'
+import NotificationStack from './components/NotificationStack'
+import NotificationsCenter from './components/NotificationsCenter'
 import { initFirebase, subscribeCollection, anonymousSignIn } from './firebase'
 import InventoryDetailModal from './components/InventoryDetailModal'
 import OrderDetailModal from './components/OrderDetailModal'
@@ -420,6 +423,9 @@ function InnerApp() {
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                             </svg>
                         </button>
+                        {userProfile?.role === 'admin' && (
+                            <NotificationsCenter />
+                        )}
                         {!isStaffOnly && (userProfile?.name === 'Adwait' || userProfile?.name === 'Avani') && (
                             <button
                                 onClick={() => setChangeHistoryVisible(true)}
@@ -499,7 +505,7 @@ function InnerApp() {
                 )}
                 {activeTab === 'add' && (
                     <TabBoundary label="Add Item">
-                        <AddItem onSuccess={() => setActiveTab('inventory')} onDataChanged={refreshAllData} />
+                        <AddItem onSuccess={() => setActiveTab('inventory')} onDataChanged={refreshAllData} userProfile={userProfile} />
                     </TabBoundary>
                 )}
                 {activeTab === 'import' && userProfile?.role === 'admin' && (
@@ -515,13 +521,13 @@ function InnerApp() {
                 <LegacyOrderModal visible={showLegacyModal} onClose={() => { setShowLegacyModal(false); setEditOrder(null); }} inventoryItems={inventoryItems} userProfile={userProfile} onDataChanged={refreshAllData} editOrder={editOrder} />
                 <StockAdjustModal item={stockAdjustItem} type={stockAdjustType} onClose={() => { setStockAdjustItem(null); setStockAdjustType(null); }} onDataChanged={refreshAllData} userProfile={userProfile} />
                 <EditItemModal item={editingId ? inventoryItems.find(i => i.id === editingId) : null} inventoryItems={inventoryItems} db={db} onClose={() => setEditingId(null)} onDataChanged={refreshAllData} />
-                <DeleteConfirmModal visible={!!deleteOrderTargetId} orderId={deleteOrderTargetId} onClose={() => { setDeleteOrderTargetId(null); }} onDataChanged={refreshAllData} />
-                <ShippingModal visible={!!shippingOrderId} orderId={shippingOrderId} onClose={() => setShippingOrderId(null)} onDataChanged={refreshAllData} />
+                <DeleteConfirmModal visible={!!deleteOrderTargetId} orderId={deleteOrderTargetId} orderNumber={allOrders.find(o => o.id === deleteOrderTargetId)?.orderNumber} userProfile={userProfile} onClose={() => { setDeleteOrderTargetId(null); }} onDataChanged={refreshAllData} />
+                <ShippingModal visible={!!shippingOrderId} orderId={shippingOrderId} orderNumber={allOrders.find(o => o.id === shippingOrderId)?.orderNumber} userProfile={userProfile} onClose={() => setShippingOrderId(null)} onDataChanged={refreshAllData} />
                 <ImageModal url={selectedImageUrl} onClose={() => setSelectedImageUrl(null)} />
                 <HistoryModal itemId={historyItemId} onClose={() => setHistoryItemId(null)} />
                 <ChangeHistoryModal visible={changeHistoryVisible} onClose={() => setChangeHistoryVisible(false)} />
-                <ProductionModal visible={showProductionModal} onClose={() => setShowProductionModal(false)} inventoryItems={inventoryItems} onDataChanged={refreshAllData} />
-                <ReceiveProductionModal visible={!!receiveBatch} batch={receiveBatch} onClose={() => setReceiveBatch(null)} onDataChanged={refreshAllData} inventoryItems={inventoryItems} />
+                <ProductionModal visible={showProductionModal} onClose={() => setShowProductionModal(false)} inventoryItems={inventoryItems} onDataChanged={refreshAllData} userProfile={userProfile} />
+                <ReceiveProductionModal visible={!!receiveBatch} batch={receiveBatch} onClose={() => setReceiveBatch(null)} onDataChanged={refreshAllData} inventoryItems={inventoryItems} userProfile={userProfile} />
             </main>
 
             {/* Bottom Navigation */}
@@ -559,11 +565,14 @@ function InnerApp() {
 
 export default function App() {
     return (
-        <AuthProvider>
-            <ErrorBoundary>
-                <InnerApp />
-            </ErrorBoundary>
-        </AuthProvider>
+        <NotificationProvider>
+            <AuthProvider>
+                <ErrorBoundary>
+                    <NotificationStack />
+                    <InnerApp />
+                </ErrorBoundary>
+            </AuthProvider>
+        </NotificationProvider>
     )
 }
 
