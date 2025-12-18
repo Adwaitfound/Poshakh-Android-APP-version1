@@ -15,26 +15,44 @@ export function useAuth() {
 export function AuthProvider({ children }) {
     const [userProfile, setUserProfile] = useState(() => {
         const saved = localStorage.getItem('poshakh-user')
-        return saved ? JSON.parse(saved) : null
+        if (!saved) return null
+        try {
+            return JSON.parse(saved)
+        } catch (e) {
+            console.warn('Corrupt user in storage, clearing')
+            localStorage.removeItem('poshakh-user')
+            return null
+        }
     })
     const [loading, setLoading] = useState(false)
+    const [isTransitioning, setIsTransitioning] = useState(false)
 
     const login = async (name) => {
-        const normalizedName = name.trim()
-        const user = USERS[normalizedName]
+        setIsTransitioning(true)
+        try {
+            const normalizedName = name.trim()
+            const user = USERS[normalizedName]
 
-        if (!user) {
-            return { ok: false, message: 'User not found. Please use: Adwait, Avani, or Binay' }
+            if (!user) {
+                return { ok: false, message: 'User not found. Please use: Adwait, Avani, or Binay' }
+            }
+
+            setUserProfile(user)
+            localStorage.setItem('poshakh-user', JSON.stringify(user))
+            return { ok: true }
+        } finally {
+            setIsTransitioning(false)
         }
-
-        setUserProfile(user)
-        localStorage.setItem('poshakh-user', JSON.stringify(user))
-        return { ok: true }
     }
 
     const logout = async () => {
-        setUserProfile(null)
-        localStorage.removeItem('poshakh-user')
+        setIsTransitioning(true)
+        try {
+            setUserProfile(null)
+            localStorage.removeItem('poshakh-user')
+        } finally {
+            setIsTransitioning(false)
+        }
     }
 
     const value = {
@@ -42,6 +60,7 @@ export function AuthProvider({ children }) {
         loading,
         login,
         logout,
+        isTransitioning,
     }
 
     return (

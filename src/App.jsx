@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { StatusBar, Style } from '@capacitor/status-bar'
 import Inventory from './components/Inventory'
 import Orders from './components/Orders'
 import AddItem from './components/AddItem'
@@ -10,6 +11,8 @@ import FinancialInsights from './components/FinancialInsights'
 import ProductionModal from './components/ProductionModal'
 import ReceiveProductionModal from './components/ReceiveProductionModal'
 import { AuthProvider, useAuth } from './context/AuthProvider'
+import ErrorBoundary from './components/ErrorBoundary'
+import TabBoundary from './components/TabBoundary'
 import { initFirebase, subscribeCollection, anonymousSignIn } from './firebase'
 import InventoryDetailModal from './components/InventoryDetailModal'
 import OrderDetailModal from './components/OrderDetailModal'
@@ -94,7 +97,7 @@ function LoginForm({ login }) {
 
 function InnerApp() {
     const [activeTab, setActiveTab] = useState('home')
-    const { userProfile, login, logout, loading } = useAuth()
+    const { userProfile, login, logout, loading, isTransitioning } = useAuth()
     const [nameInput, setNameInput] = useState('')
     const [inventoryItems, setInventoryItems] = useState([])
     const [allOrders, setAllOrders] = useState([])
@@ -124,6 +127,18 @@ function InnerApp() {
 
     // initialize firebase and authenticate - matching working HTML version
     React.useEffect(() => {
+        // Style status/navigation bars to match the app theme and avoid overlap
+        (async () => {
+            try {
+                await StatusBar.setOverlaysWebView({ overlay: false })
+                await StatusBar.setStyle({ style: Style.Light })
+                await StatusBar.setBackgroundColor({ color: '#084734' })
+                await StatusBar.show()
+            } catch (e) {
+                console.warn('StatusBar styling not applied:', e?.message || e)
+            }
+        })()
+
         try {
             initFirebase()
             const firestore = getDb()
@@ -160,7 +175,20 @@ function InnerApp() {
         }
     }, [])
 
-    // Load fabrics once on mount - manual refresh required for updates
+    // Keep active tab consistent with role / logout
+    React.useEffect(() => {
+        if (!userProfile) {
+            setActiveTab('home')
+            return
+        }
+        if (userProfile.role === 'staff') {
+            setActiveTab('inventory')
+        } else {
+            setActiveTab('home')
+        }
+    }, [userProfile?.role])
+
+    // Load fabrics once db is ready
     React.useEffect(() => {
         if (!db) return
         loadInventory()
@@ -177,7 +205,7 @@ function InnerApp() {
         }
     }
 
-    // Load orders once on mount - manual refresh required for updates
+    // Load orders once db is ready
     React.useEffect(() => {
         if (!db) return
         loadOrders()
@@ -240,7 +268,7 @@ function InnerApp() {
         }
     }
 
-    // Load production batches once on mount - manual refresh required for updates
+    // Load production batches once db is ready
     React.useEffect(() => {
         if (!db) return
         loadProductionBatches()
@@ -323,13 +351,24 @@ function InnerApp() {
         try { const db = getDb(); await deleteDoc(doc(db, FABRICS_COLLECTION, item.id)); setViewInventoryItem(null); await loadInventory() } catch (e) { console.error(e) }
     }
 
+    if (isTransitioning) {
+        return (
+            <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-emerald-pine via-emerald-800 to-emerald-900">
+                <div className="text-center">
+                    <div className="w-16 h-16 border-4 border-lime-glow border-t-emerald-pine rounded-full animate-spin mx-auto mb-4"></div>
+                    <p className="text-lime-glow font-semibold">Loading...</p>
+                </div>
+            </div>
+        )
+    }
+
     if (!userProfile) {
         return (
             <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-emerald-pine via-emerald-800 to-emerald-900 p-4">
                 <div className="w-full max-w-sm bg-gray-900 rounded-3xl shadow-2xl p-8">
                     <div className="text-center mb-8">
-                        <div className="w-20 h-20 bg-gradient-to-br from-lime-glow to-green-tea rounded-3xl mx-auto mb-4 flex items-center justify-center shadow-lg">
-                            <svg className="w-12 h-12 text-emerald-pine" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" /></svg>
+                        <div className="w-20 h-20 rounded-3xl mx-auto mb-4 shadow-lg overflow-hidden bg-gradient-to-br from-lime-glow to-green-tea flex items-center justify-center">
+                            <img src="/brand-icon.png" alt="Poshakh logo" className="w-full h-full object-contain" />
                         </div>
                         <h1 className="text-3xl font-extrabold text-emerald-pine mb-2">Poshakh Manager</h1>
                         <p className="text-gray-500 text-sm">Stock & Production Tracking</p>
@@ -340,7 +379,14 @@ function InnerApp() {
         )
     }
 
-    const tabs = [
+    // Only allow Binay (staff) to see inventory tab
+    const isStaffOnly = userProfile?.role === 'staff'
+
+    // (Removed redundant force-to-inventory effect; role effect already handles this.)
+
+    const tabs = isStaffOnly ? [
+        { id: 'inventory', label: 'Inventory', icon: Icons.Box },
+    ] : [
         { id: 'home', label: 'Home', icon: Icons.Home },
         { id: 'inventory', label: 'Inventory', icon: Icons.Box },
         { id: 'orders', label: 'Orders', icon: Icons.Clipboard },
@@ -356,8 +402,8 @@ function InnerApp() {
             <header className="bg-gradient-to-r from-emerald-pine to-emerald-800 border-b border-emerald-900 sticky top-0 z-40 shadow-lg">
                 <div className="px-4 sm:px-6 py-3 sm:py-4 flex justify-between items-center">
                     <div className="flex items-center gap-2 sm:gap-3">
-                        <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-gradient-to-br from-lime-glow to-green-tea flex items-center justify-center">
-                            <svg className="w-6 h-6 sm:w-7 sm:h-7 text-emerald-pine" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" /></svg>
+                        <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-gradient-to-br from-lime-glow to-green-tea flex items-center justify-center overflow-hidden">
+                            <img src="/brand-icon.png" alt="Poshakh logo" className="w-full h-full object-contain" />
                         </div>
                         <div>
                             <h1 className="text-base sm:text-lg font-bold text-white">Poshakh Manager</h1>
@@ -374,7 +420,7 @@ function InnerApp() {
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                             </svg>
                         </button>
-                        {(userProfile?.name === 'Adwait' || userProfile?.name === 'Avani') && (
+                        {!isStaffOnly && (userProfile?.name === 'Adwait' || userProfile?.name === 'Avani') && (
                             <button
                                 onClick={() => setChangeHistoryVisible(true)}
                                 className="h-9 w-9 sm:h-10 sm:w-10 bg-emerald-600 text-lime-glow rounded-2xl flex items-center justify-center hover:bg-emerald-500 active:scale-95 transition-all shadow-lg"
@@ -385,17 +431,24 @@ function InnerApp() {
                                 </svg>
                             </button>
                         )}
-                        {userProfile?.role === 'admin' && (
+                        {!isStaffOnly && userProfile?.role === 'admin' && (
                             <button onClick={() => setActiveTab('import')} className="h-9 w-9 sm:h-10 sm:w-10 bg-emerald-600 text-lime-glow rounded-2xl flex items-center justify-center hover:bg-emerald-500 active:scale-95 transition-all shadow-lg" title="Import">
                                 <Icons.Table className="w-4 h-4 sm:w-5 sm:h-5" />
                             </button>
                         )}
-                        <div className="text-right hidden sm:block">
-                            <p className="text-sm font-semibold text-gray-900">{userProfile.name}</p>
-                            <p className="text-xs text-gray-500 capitalize">{userProfile.role}</p>
+                        <div className={!isStaffOnly ? "text-right hidden sm:block" : "text-right hidden sm:block"}>
+                            <p className="text-sm font-semibold text-gray-900">{userProfile?.name || ''}</p>
+                            <p className="text-xs text-gray-500 capitalize">{userProfile?.role || ''}</p>
                         </div>
                         <button
-                            onClick={logout}
+                            onClick={async () => {
+                                try {
+                                    await logout()
+                                    setActiveTab('home')
+                                } catch (e) {
+                                    console.error('Logout error:', e)
+                                }
+                            }}
                             className="p-2 rounded-lg hover:bg-red-50 active:bg-red-100 text-red-600 transition"
                             title="Logout"
                         >
@@ -407,23 +460,53 @@ function InnerApp() {
 
             {/* Main Content */}
             <main className="px-4 sm:px-6 py-4 sm:py-6 max-w-7xl mx-auto pb-24">
-                {activeTab === 'home' && <Dashboard allOrders={allOrders} inventoryItems={inventoryItems} userRole={userProfile?.role} />}
-                {activeTab === 'inventory' && <Inventory onViewItem={(it) => setViewInventoryItem(it)} inventoryItems={inventoryItems} soldCounts={{}} onAddClick={() => setActiveTab('add')} userRole={userProfile?.role} />}
-                {activeTab === 'orders' && <Orders allOrders={allOrders} inventoryItems={inventoryItems} productionBatches={productionBatches} onViewOrder={(o) => setViewOrder(o)} onShowLegacyModal={() => setShowLegacyModal(true)} onCancelOrder={handleCancelOrder} onDeleteOrder={(id) => { console.log('onDeleteOrder called with id:', id); setDeleteOrderTargetId(id); }} onOpenShipping={(id) => setShippingOrderId(id)} onCreateProductionBatch={() => setShowProductionModal(true)} onReceiveBatch={(batch) => setReceiveBatch(batch)} userProfile={userProfile} onDataChanged={refreshAllData} />}
-                {activeTab === 'outfits' && <Outfits allOrders={allOrders} inventoryItems={inventoryItems} />}
-                {activeTab === 'customers' && (
-                    <Customers
-                        allOrders={allOrders}
-                        onViewCustomer={(c) => setViewCustomer(c)}
-                        searchTerm={customerSearch}
-                        setSearchTerm={setCustomerSearch}
-                        onAddCustomer={handleAddCustomer}
-                        onDeleteCustomer={handleDeleteCustomer}
-                    />
+                {activeTab === 'home' && (
+                    <TabBoundary label="Home">
+                        <Dashboard allOrders={allOrders} inventoryItems={inventoryItems} userRole={userProfile?.role} />
+                    </TabBoundary>
                 )}
-                {activeTab === 'financial' && <FinancialInsights inventoryItems={inventoryItems} allOrders={allOrders} userRole={userProfile?.role} />}
-                {activeTab === 'add' && <AddItem onSuccess={() => setActiveTab('inventory')} onDataChanged={refreshAllData} />}
-                {activeTab === 'import' && userProfile?.role === 'admin' && <SheetImport />}
+                {activeTab === 'inventory' && (
+                    <TabBoundary label="Inventory">
+                        <Inventory onViewItem={(it) => setViewInventoryItem(it)} inventoryItems={inventoryItems} soldCounts={{}} onAddClick={() => setActiveTab('add')} userRole={userProfile?.role} />
+                    </TabBoundary>
+                )}
+                {activeTab === 'orders' && (
+                    <TabBoundary label="Orders">
+                        <Orders allOrders={allOrders} inventoryItems={inventoryItems} productionBatches={productionBatches} onViewOrder={(o) => setViewOrder(o)} onShowLegacyModal={() => setShowLegacyModal(true)} onCancelOrder={handleCancelOrder} onDeleteOrder={(id) => { console.log('onDeleteOrder called with id:', id); setDeleteOrderTargetId(id); }} onOpenShipping={(id) => setShippingOrderId(id)} onCreateProductionBatch={() => setShowProductionModal(true)} onReceiveBatch={(batch) => setReceiveBatch(batch)} userProfile={userProfile} onDataChanged={refreshAllData} />
+                    </TabBoundary>
+                )}
+                {activeTab === 'outfits' && (
+                    <TabBoundary label="Outfits">
+                        <Outfits allOrders={allOrders} inventoryItems={inventoryItems} />
+                    </TabBoundary>
+                )}
+                {activeTab === 'customers' && (
+                    <TabBoundary label="Customers">
+                        <Customers
+                            allOrders={allOrders}
+                            onViewCustomer={(c) => setViewCustomer(c)}
+                            searchTerm={customerSearch}
+                            setSearchTerm={setCustomerSearch}
+                            onAddCustomer={handleAddCustomer}
+                            onDeleteCustomer={handleDeleteCustomer}
+                        />
+                    </TabBoundary>
+                )}
+                {activeTab === 'financial' && (
+                    <TabBoundary label="Financial">
+                        <FinancialInsights inventoryItems={inventoryItems} allOrders={allOrders} userRole={userProfile?.role} />
+                    </TabBoundary>
+                )}
+                {activeTab === 'add' && (
+                    <TabBoundary label="Add Item">
+                        <AddItem onSuccess={() => setActiveTab('inventory')} onDataChanged={refreshAllData} />
+                    </TabBoundary>
+                )}
+                {activeTab === 'import' && userProfile?.role === 'admin' && (
+                    <TabBoundary label="Import">
+                        <SheetImport />
+                    </TabBoundary>
+                )}
 
                 {/* Modals wired to state and handlers */}
                 <InventoryDetailModal item={viewInventoryItem} onClose={() => setViewInventoryItem(null)} onOpenEdit={openEditModal} onOpenStock={openStockModal} onViewHistory={(it) => { setViewInventoryItem(null); setHistoryItemId(it.id); }} onDelete={handleDeleteItem} />
@@ -477,7 +560,9 @@ function InnerApp() {
 export default function App() {
     return (
         <AuthProvider>
-            <InnerApp />
+            <ErrorBoundary>
+                <InnerApp />
+            </ErrorBoundary>
         </AuthProvider>
     )
 }
