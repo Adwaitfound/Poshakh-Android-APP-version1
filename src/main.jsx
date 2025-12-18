@@ -6,6 +6,8 @@ import './styles.css'
 
 createRoot(document.getElementById('root')).render(
     <React.StrictMode>
-        <App />
+        <div className="safe-area-inset-top safe-area-inset-bottom">
+            <App />
+        </div>
     </React.StrictMode>
 )

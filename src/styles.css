@@ -132,6 +132,25 @@ select:focus {
     padding-bottom: env(safe-area-inset-bottom, 0);
 }
 
+/* Safe area inset for top (status bar/notch) */
+.safe-area-inset-top {
+    padding-top: env(safe-area-inset-top, 0);
+}
+
+/* Paint the top safe-area to match app theme */
+.safe-area-inset-top::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: env(safe-area-inset-top, 0);
+    background-color: #084734;
+    /* app theme color */
+    z-index: 50;
+    pointer-events: none;
+}
+
 @keyframes spin {
     to {
         transform: rotate(360deg);
