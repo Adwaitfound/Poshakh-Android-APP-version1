@@ -1,0 +1,5 @@
+# Icon Placeholder
+You need to create icon-192.png and icon-512.png for the PWA.
+You can use an online tool like https://realfavicongenerator.net/ to generate these from your logo.
+
+For now, I'll create simple placeholder SVGs that you can replace later.
