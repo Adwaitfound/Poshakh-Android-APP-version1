@@ -89,7 +89,7 @@ export default function StockAdjustModal({ item, type, onClose, userProfile, onD
                             <button
                                 key={s}
                                 onClick={() => setSize(s)}
-                                className={`w-10 h-10 rounded-full font-bold text-sm ${size === s ? 'bg-outfit-600 text-white' : 'bg-gray-100 text-gray-500'}`}
+                                className={`w-10 h-10 rounded-full font-bold text-sm transition-colors ${size === s ? 'bg-[#084734] text-[#CEF17B]' : 'bg-gray-100 text-gray-500'}`}
                             >
                                 {s}
                             </button>
@@ -103,7 +103,7 @@ export default function StockAdjustModal({ item, type, onClose, userProfile, onD
                     <input
                         type="number"
                         step="0.1"
-                        className="w-full p-4 border-2 border-brand-100 rounded-2xl text-2xl text-center font-bold focus:border-brand outline-none"
+                        className="w-full p-4 border-2 border-[#084734]/30 rounded-2xl text-2xl text-center font-bold focus:border-[#084734] outline-none text-gray-800"
                         autoFocus
                         value={amount}
                         onChange={e => setAmount(e.target.value)}
@@ -114,14 +114,14 @@ export default function StockAdjustModal({ item, type, onClose, userProfile, onD
                 <div className="flex gap-3">
                     <button
                         onClick={handleSubmit}
-                        className="flex-1 bg-brand text-white py-3 rounded-xl font-bold shadow-lg shadow-brand/30"
+                        className="flex-1 bg-[#084734] text-[#CEF17B] py-3 rounded-xl font-bold shadow-lg hover:brightness-110 active:scale-95 transition-all"
                         disabled={isLoading || !amount}
                     >
                         Confirm
                     </button>
                     <button
                         onClick={onClose}
-                        className="flex-1 bg-gray-100 text-gray-600 dark:text-gray-400 dark:text-gray-500 py-3 rounded-xl font-bold"
+                        className="flex-1 bg-gray-100 text-gray-700 dark:text-gray-300 py-3 rounded-xl font-bold border border-gray-200"
                         disabled={isLoading}
                     >
                         Cancel

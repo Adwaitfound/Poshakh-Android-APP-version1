@@ -309,7 +309,6 @@ export default function Orders({
                 const dateB = b.receivedDate?.toDate ? b.receivedDate.toDate() : new Date(b.receivedDate)
                 return dateB - dateA
             })
-            .slice(0, 3)
     }, [productionBatches])
 
     const formatDate = (date) => {

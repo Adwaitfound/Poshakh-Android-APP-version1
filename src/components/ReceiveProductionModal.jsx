@@ -53,11 +53,6 @@ export default function ReceiveProductionModal({ visible, batch, onClose, onData
             return
         }
 
-        if (status === 'Completed' && totalReceived !== totalEstimated) {
-            setError(`Total received (${totalReceived}) must match estimated (${totalEstimated}) pieces when marking as Received`)
-            return
-        }
-
         setIsSubmitting(true)
         setError('')
 
@@ -224,14 +219,9 @@ export default function ReceiveProductionModal({ visible, batch, onClose, onData
                             </span>
                         </div>
 
-                        {totalReceived !== totalEstimated && status === 'Completed' && (
-                            <div className="mt-2 p-2 bg-red-900/30 border border-red-500/50 rounded-lg text-red-200 text-xs">
-                                ❌ Total must match estimated ({totalEstimated} pieces) to mark as Received
-                            </div>
-                        )}
-                        {totalReceived !== totalEstimated && status !== 'Completed' && (
+                        {totalReceived !== totalEstimated && (
                             <div className="mt-2 p-2 bg-amber-900/30 border border-amber-500/50 rounded-lg text-amber-200 text-xs">
-                                ⚠️ Total differs from estimated ({totalEstimated} pieces)
+                                ⚠️ Total received ({totalReceived}) differs from estimated ({totalEstimated} pieces)
                             </div>
                         )}
                     </div>
@@ -246,7 +236,7 @@ export default function ReceiveProductionModal({ visible, batch, onClose, onData
                 <div className="p-6 pt-4 border-t border-lime-glow/40 flex gap-3 flex-shrink-0 bg-gray-950">
                     <button
                         onClick={handleSubmit}
-                        disabled={isSubmitting || (status === 'Completed' && totalReceived !== totalEstimated)}
+                        disabled={isSubmitting}
                         className="flex-1 bg-lime-glow text-emerald-pine py-3 rounded-xl font-bold shadow-lg hover:bg-lime-glow/90 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                         {isSubmitting ? 'Saving...' : 'Update Batch'}

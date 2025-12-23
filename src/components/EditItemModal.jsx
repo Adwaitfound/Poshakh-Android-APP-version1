@@ -191,20 +191,20 @@ export default function EditItemModal({ item, inventoryItems, db, onClose, onDat
                     )}
 
                     <div>
-                        <label className="text-xs font-bold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase block mb-2">Update Image</label>
+                        <label className="text-xs font-bold text-gray-700 dark:text-gray-200 uppercase block mb-2">Update Image</label>
                         <div className="grid grid-cols-2 gap-3">
                             <div
                                 onClick={() => editCameraRef.current?.click()}
-                                className="h-20 bg-gray-50 dark:bg-gray-900 rounded-xl border-dashed border-2 border-gray-300 dark:border-gray-600 flex flex-col items-center justify-center text-gray-400 dark:text-gray-500 cursor-pointer hover:border-brand active:bg-gray-100"
+                                className="h-20 w-full bg-[#084734] border-2 border-[#084734] rounded-xl flex flex-col items-center justify-center text-[#CEF17B] font-semibold shadow-md cursor-pointer hover:shadow-lg hover:brightness-110 active:scale-95 transition-all"
                             >
-                                <Camera className="w-6 h-6 mb-1" />
+                                <Camera className="w-7 h-7 mb-1 text-[#CEF17B]" />
                                 <span className="text-xs">Camera</span>
                             </div>
                             <div
                                 onClick={() => editGalleryRef.current?.click()}
-                                className="h-20 bg-gray-50 dark:bg-gray-900 rounded-xl border-dashed border-2 border-gray-300 dark:border-gray-600 flex flex-col items-center justify-center text-gray-400 dark:text-gray-500 cursor-pointer hover:border-brand active:bg-gray-100"
+                                className="h-20 w-full bg-[#084734] border-2 border-[#084734] rounded-xl flex flex-col items-center justify-center text-[#CEF17B] font-semibold shadow-md cursor-pointer hover:shadow-lg hover:brightness-110 active:scale-95 transition-all"
                             >
-                                <ImageIcon className="w-6 h-6 mb-1" />
+                                <ImageIcon className="w-7 h-7 mb-1 text-[#CEF17B]" />
                                 <span className="text-xs">Gallery</span>
                             </div>
                         </div>
@@ -233,7 +233,7 @@ export default function EditItemModal({ item, inventoryItems, db, onClose, onDat
                     <button
                         onClick={handleEditSave}
                         disabled={isUploading}
-                        className="w-full bg-brand text-white py-4 rounded-xl font-bold shadow-lg flex justify-center items-center gap-2 active:bg-brand-dark disabled:opacity-50"
+                        className="w-full bg-[#084734] text-[#CEF17B] py-4 rounded-xl font-bold shadow-lg flex justify-center items-center gap-2 active:brightness-110 disabled:opacity-50"
                     >
                         {isUploading ? 'Saving...' : (
                             <>
