@@ -16,6 +16,10 @@ export default function Inventory({
         return Object.values(breakdown).reduce((a, b) => a + (parseInt(b) || 0), 0)
     }
 
+    const getSoldCount = (item) => {
+        return soldCounts[item.id] ?? soldCounts[item.name] ?? 0
+    }
+
     const inventoryList = useMemo(() => {
         let list = [...inventoryItems]
 
@@ -108,24 +112,27 @@ export default function Inventory({
                         return (
                             <div
                                 key={item.id}
-                                className="relative aspect-[4/5] rounded-2xl overflow-hidden shadow-md bg-white cursor-pointer"
+                                className="relative aspect-[4/5] rounded-2xl overflow-hidden shadow-md bg-white cursor-pointer hover:shadow-lg transition-shadow"
                                 onClick={() => onViewItem && onViewItem(item)}
                             >
                                 <img src={item.imageUrl} className="w-full h-full object-cover" />
-                                <div className="absolute bottom-0 w-full bg-gradient-to-t from-black/80 to-transparent p-3 pt-6">
+                                <div className="absolute bottom-0 w-full bg-gradient-to-t from-black/90 to-transparent p-3 pt-8">
                                     <h4 className="text-white font-bold text-sm truncate">{item.name}</h4>
-                                    <p className="text-xs text-gray-300">{(parseFloat(item.currentLength) || 0).toFixed(1)} {item.unit}</p>
+                                    <p className="text-xs text-gray-200 font-semibold">{(parseFloat(item.currentLength) || 0).toFixed(1)} {item.unit} available</p>
+                                    {item.vendorName && (
+                                        <p className="text-[10px] text-lime-300 mt-1 truncate">📦 {item.vendorName}</p>
+                                    )}
                                 </div>
                                 {isLow && (
-                                    <div className="absolute top-2 right-2 bg-red-500 text-white text-[9px] font-bold px-2 py-0.5 rounded-full">
-                                        Low
+                                    <div className="absolute top-2 right-2 bg-red-500 text-white text-[9px] font-bold px-2 py-0.5 rounded-full animate-pulse">
+                                        ⚠️ Low Stock
                                     </div>
                                 )}
                             </div>
                         )
                     } else {
                         const totalReady = getOutfitTotal(item.stockBreakdown)
-                        const sold = (soldCounts[item.name] || 0) + (parseInt(item.manualSoldCount) || 0)
+                        const sold = getSoldCount(item)
                         return (
                             <div
                                 key={item.id}

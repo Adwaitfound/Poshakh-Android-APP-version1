@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react'
-import { Scissors, Package, TrendingUp, AlertCircle } from 'lucide-react'
+import { Scissors, Package, TrendingUp, AlertCircle, X } from 'lucide-react'
 
-export default function Production({ productionBatches = [], inventoryItems = [], onCreateBatch, onReceiveBatch }) {
+export default function Production({ productionBatches = [], inventoryItems = [], onCreateBatch, onReceiveBatch, onCancelBatch }) {
     const [filter, setFilter] = useState('all') // all, completed, in-progress
 
     const stats = useMemo(() => {
@@ -173,15 +173,33 @@ export default function Production({ productionBatches = [], inventoryItems = []
                                                 <h4 className="font-bold text-white text-sm truncate">{batch.outfitName}</h4>
                                                 <p className="text-xs text-lime-glow/80">{batch.fabricName}</p>
                                             </div>
-                                            {batch.status === 'Completed' ? (
-                                                <span className="bg-lime-glow/20 text-lime-glow px-2 py-1 rounded text-xs font-bold border border-lime-glow/50">
-                                                    ✓ Received
-                                                </span>
-                                            ) : (
-                                                <span className="bg-amber-600/80 text-white px-2 py-1 rounded text-xs font-bold border border-amber-500">
-                                                    Pending
-                                                </span>
-                                            )}
+                                            <div className="flex items-center gap-2">
+                                                {batch.status === 'Completed' ? (
+                                                    <span className="bg-lime-glow/20 text-lime-glow px-2 py-1 rounded text-xs font-bold border border-lime-glow/50">
+                                                        ✓ Received
+                                                    </span>
+                                                ) : batch.status === 'Cancelled' ? (
+                                                    <span className="bg-red-900/40 text-red-400 px-2 py-1 rounded text-xs font-bold border border-red-500/40">
+                                                        ✗ Cancelled
+                                                    </span>
+                                                ) : (
+                                                    <span className="bg-amber-600/80 text-white px-2 py-1 rounded text-xs font-bold border border-amber-500">
+                                                        Pending
+                                                    </span>
+                                                )}
+                                                {batch.status !== 'Completed' && batch.status !== 'Cancelled' && (
+                                                    <button
+                                                        onClick={(e) => {
+                                                            e.stopPropagation()
+                                                            onCancelBatch && onCancelBatch(batch)
+                                                        }}
+                                                        className="p-1.5 hover:bg-red-900/40 rounded transition-all"
+                                                        title="Cancel batch"
+                                                    >
+                                                        <X className="w-4 h-4 text-red-400 hover:text-red-300" />
+                                                    </button>
+                                                )}
+                                            </div>
                                         </div>
                                         <div className="flex gap-3 mt-2 text-xs">
                                             <span className="bg-emerald-pine text-lime-glow px-2 py-1 rounded">

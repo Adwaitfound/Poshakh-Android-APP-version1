@@ -17,6 +17,9 @@ export default function ProductionModal({ visible, onClose, inventoryItems = [],
         sizeXL: '',
         sizeXXL: '',
         stitchingCostTotal: '',
+        accessoriesCost: '',
+        packagingCost: '',
+        otherProductionCosts: '',
         tailorName: '',
         notes: '',
         status: 'In Progress',
@@ -81,7 +84,22 @@ export default function ProductionModal({ visible, onClose, inventoryItems = [],
         return (parseFloat(form.stitchingCostTotal) || 0) / totalPieces
     }, [form.stitchingCostTotal, totalPieces])
 
-    const totalCostPerPiece = fabricCostPerPiece + stitchingCostPerPiece
+    const accessoriesCostPerPiece = useMemo(() => {
+        if (totalPieces === 0) return 0
+        return (parseFloat(form.accessoriesCost) || 0) / totalPieces
+    }, [form.accessoriesCost, totalPieces])
+
+    const packagingCostPerPiece = useMemo(() => {
+        if (totalPieces === 0) return 0
+        return (parseFloat(form.packagingCost) || 0) / totalPieces
+    }, [form.packagingCost, totalPieces])
+
+    const otherCostPerPiece = useMemo(() => {
+        if (totalPieces === 0) return 0
+        return (parseFloat(form.otherProductionCosts) || 0) / totalPieces
+    }, [form.otherProductionCosts, totalPieces])
+
+    const totalCostPerPiece = fabricCostPerPiece + stitchingCostPerPiece + accessoriesCostPerPiece + packagingCostPerPiece + otherCostPerPiece
 
     const handleSubmit = async (e) => {
         e.preventDefault()
@@ -117,6 +135,9 @@ export default function ProductionModal({ visible, onClose, inventoryItems = [],
                 fabricName: selectedFabric.name,
                 fabricUsed: fabricUsed,
                 fabricCostPerMeter: parseFloat(selectedFabric.costPerMeter) || 0,
+                fabricActualCostPerMeter: parseFloat(selectedFabric.actualCostPerMeter) || parseFloat(selectedFabric.costPerMeter) || 0,
+                vendorId: selectedFabric.vendorId || null,
+                vendorName: selectedFabric.vendorName || null,
                 outfitId: form.outfitId,
                 outfitName: selectedOutfit.name,
                 outfitImageUrl: selectedOutfit.imageUrl || '',
@@ -133,8 +154,15 @@ export default function ProductionModal({ visible, onClose, inventoryItems = [],
                     XXL: parseInt(form.sizeXXL) || 0
                 },
                 totalPieces,
+                // Detailed cost breakdown
                 stitchingCostTotal: parseFloat(form.stitchingCostTotal) || 0,
                 stitchingCostPerPiece,
+                accessoriesCostTotal: parseFloat(form.accessoriesCost) || 0,
+                accessoriesCostPerPiece,
+                packagingCostTotal: parseFloat(form.packagingCost) || 0,
+                packagingCostPerPiece,
+                otherProductionCostsTotal: parseFloat(form.otherProductionCosts) || 0,
+                otherCostPerPiece,
                 fabricCostPerPiece,
                 totalCostPerPiece,
                 tailorName: form.tailorName || 'Unknown',
@@ -163,10 +191,10 @@ export default function ProductionModal({ visible, onClose, inventoryItems = [],
                     },
                     productionCostPerPiece: totalCostPerPiece
                 })
+                
+                // Only log when batch is immediately completed (received)
+                await logInventoryAdded(`${selectedOutfit.name} Received (${totalPieces} pieces)`, 'outfit', userProfile?.name || 'Unknown')
             }
-
-            // Log production batch created
-            await logInventoryAdded(`${selectedOutfit.name} (Production)`, 'outfit', userProfile?.name || 'Unknown')
 
             const statusMsg = form.receivedDate
                 ? `✅ Production batch completed!\n${totalPieces} pieces added to inventory\n${fabricUsed}m deducted from fabric`
@@ -189,6 +217,9 @@ export default function ProductionModal({ visible, onClose, inventoryItems = [],
                 sizeXL: '',
                 sizeXXL: '',
                 stitchingCostTotal: '',
+                accessoriesCost: '',
+                packagingCost: '',
+                otherProductionCosts: '',
                 tailorName: '',
                 notes: '',
                 status: 'In Progress',
@@ -372,6 +403,51 @@ export default function ProductionModal({ visible, onClose, inventoryItems = [],
                             placeholder="e.g., 5400"
                             required
                         />
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Total tailor/stitching charges</p>
+                    </div>
+
+                    {/* Additional Costs Section */}
+                    <div className="bg-purple-50 dark:bg-purple-900/20 p-4 rounded-xl border-2 border-purple-200 dark:border-purple-700 space-y-3">
+                        <h4 className="font-bold text-purple-900 dark:text-purple-300 mb-2">💰 Additional Production Costs</h4>
+                        
+                        <div>
+                            <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Accessories Cost</label>
+                            <input
+                                type="number"
+                                step="0.01"
+                                value={form.accessoriesCost}
+                                onChange={(e) => setForm({ ...form, accessoriesCost: e.target.value })}
+                                className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-xl"
+                                placeholder="e.g., 850"
+                            />
+                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Buttons, zippers, threads, embellishments, etc.</p>
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Packaging Cost</label>
+                            <input
+                                type="number"
+                                step="0.01"
+                                value={form.packagingCost}
+                                onChange={(e) => setForm({ ...form, packagingCost: e.target.value })}
+                                className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-xl"
+                                placeholder="e.g., 300"
+                            />
+                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Bags, tags, labels, boxes, etc.</p>
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Other Costs</label>
+                            <input
+                                type="number"
+                                step="0.01"
+                                value={form.otherProductionCosts}
+                                onChange={(e) => setForm({ ...form, otherProductionCosts: e.target.value })}
+                                className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-xl"
+                                placeholder="e.g., 200"
+                            />
+                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Quality check, ironing, miscellaneous</p>
+                        </div>
                     </div>
 
                     {/* Tailor Name */}
@@ -423,29 +499,54 @@ export default function ProductionModal({ visible, onClose, inventoryItems = [],
 
                     {/* Cost Summary */}
                     {totalPieces > 0 && (
-                        <div className="bg-green-50 p-4 rounded-xl border border-green-200">
-                            <h4 className="font-bold text-green-900 mb-2">Cost Breakdown (Per Piece)</h4>
-                            <div className="space-y-1 text-sm">
+                        <div className="bg-green-50 dark:bg-green-900/20 p-4 rounded-xl border border-green-200 dark:border-green-700">
+                            <h4 className="font-bold text-green-900 dark:text-green-300 mb-3">📊 Detailed Cost Breakdown (Per Piece)</h4>
+                            <div className="space-y-2 text-sm">
                                 <div className="flex justify-between">
-                                    <span className="text-green-700">Fabric Cost:</span>
-                                    <span className="font-bold text-green-900">₹{fabricCostPerPiece.toFixed(2)}</span>
+                                    <span className="text-green-700 dark:text-green-400">Fabric Cost:</span>
+                                    <span className="font-bold text-green-900 dark:text-green-200">₹{fabricCostPerPiece.toFixed(2)}</span>
                                 </div>
                                 <div className="flex justify-between">
-                                    <span className="text-green-700">Stitching Cost:</span>
-                                    <span className="font-bold text-green-900">₹{stitchingCostPerPiece.toFixed(2)}</span>
+                                    <span className="text-green-700 dark:text-green-400">Stitching Cost:</span>
+                                    <span className="font-bold text-green-900 dark:text-green-200">₹{stitchingCostPerPiece.toFixed(2)}</span>
                                 </div>
-                                <div className="flex justify-between border-t border-green-300 pt-1">
-                                    <span className="text-green-800 font-bold">Total Cost/Piece:</span>
-                                    <span className="font-bold text-green-900">₹{totalCostPerPiece.toFixed(2)}</span>
+                                {accessoriesCostPerPiece > 0 && (
+                                    <div className="flex justify-between">
+                                        <span className="text-green-700 dark:text-green-400">Accessories:</span>
+                                        <span className="font-bold text-green-900 dark:text-green-200">₹{accessoriesCostPerPiece.toFixed(2)}</span>
+                                    </div>
+                                )}
+                                {packagingCostPerPiece > 0 && (
+                                    <div className="flex justify-between">
+                                        <span className="text-green-700 dark:text-green-400">Packaging:</span>
+                                        <span className="font-bold text-green-900 dark:text-green-200">₹{packagingCostPerPiece.toFixed(2)}</span>
+                                    </div>
+                                )}
+                                {otherCostPerPiece > 0 && (
+                                    <div className="flex justify-between">
+                                        <span className="text-green-700 dark:text-green-400">Other Costs:</span>
+                                        <span className="font-bold text-green-900 dark:text-green-200">₹{otherCostPerPiece.toFixed(2)}</span>
+                                    </div>
+                                )}
+                                <div className="flex justify-between border-t border-green-300 dark:border-green-600 pt-2 mt-2">
+                                    <span className="text-green-800 dark:text-green-300 font-bold text-base">Total Production Cost:</span>
+                                    <span className="font-bold text-green-900 dark:text-green-200 text-lg">₹{totalCostPerPiece.toFixed(2)}</span>
                                 </div>
+                                {selectedFabric?.vendorName && (
+                                    <div className="mt-3 pt-3 border-t border-green-300 dark:border-green-600">
+                                        <p className="text-xs text-green-700 dark:text-green-400">
+                                            <span className="font-bold">Fabric Vendor:</span> {selectedFabric.vendorName}
+                                        </p>
+                                    </div>
+                                )}
                             </div>
                             {estimatedPieces > 0 && totalPieces !== estimatedPieces && (
-                                <div className="mt-3 pt-3 border-t border-green-300">
-                                    <p className="text-xs text-green-800">
+                                <div className="mt-3 pt-3 border-t border-green-300 dark:border-green-600">
+                                    <p className="text-xs text-green-800 dark:text-green-300">
                                         <span className="font-bold">Variance:</span> {totalPieces > estimatedPieces ? '+' : ''}{totalPieces - estimatedPieces} pieces
                                         ({((totalPieces - estimatedPieces) / estimatedPieces * 100).toFixed(1)}%)
                                     </p>
-                                    <p className="text-xs text-green-600 mt-1">
+                                    <p className="text-xs text-green-600 dark:text-green-400 mt-1">
                                         This data will improve future predictions
                                     </p>
                                 </div>

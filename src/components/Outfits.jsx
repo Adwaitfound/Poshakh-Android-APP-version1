@@ -28,6 +28,7 @@ export default function Outfits({ allOrders = [], inventoryItems = [] }) {
                 stock: getOutfitTotal(item.stockBreakdown),
                 revenue: 0,
                 qty: 0,
+                salesBySize: {},
                 inInventory: true
             }))
     }, [inventoryItems])
@@ -45,11 +46,20 @@ export default function Outfits({ allOrders = [], inventoryItems = [] }) {
             if (o.status === 'Cancelled') return
             const name = (o.outfitName || o.productName || 'Unknown').trim()
             const nameLower = name.toLowerCase()
-            const revenue = cleanNumber(o.finalSellingPrice) || cleanNumber(o.orderTotal) || 0
+            const baseRevenue = cleanNumber(o.finalSellingPrice) || cleanNumber(o.orderTotal) || 0
+            const discount = cleanNumber(o.discount) || 0
+            const revenue = baseRevenue - discount
 
             if (stats[nameLower]) {
+                const saleQty = parseInt(o.quantity) || 1
                 stats[nameLower].revenue += revenue
-                stats[nameLower].qty += (parseInt(o.quantity) || 1)
+                stats[nameLower].qty += saleQty
+
+                // Track sales by size for breakdown in detail modal
+                const sizeKey = (o.size || 'Unknown').toUpperCase()
+                const currentSalesBySize = stats[nameLower].salesBySize || {}
+                currentSalesBySize[sizeKey] = (parseInt(currentSalesBySize[sizeKey]) || 0) + saleQty
+                stats[nameLower].salesBySize = currentSalesBySize
             }
         })
 
@@ -58,7 +68,8 @@ export default function Outfits({ allOrders = [], inventoryItems = [] }) {
 
     // Find outfit names in orders that don't exist in inventory
     const orphanedOrders = useMemo(() => {
-        const inventoryNames = new Set(inventoryItems.filter(i => i.type === 'outfit').map(i => i.name.toLowerCase()))
+        const inventoryOutfits = inventoryItems.filter(i => i.type === 'outfit')
+        
         const orphaned = []
 
         allOrders.forEach(o => {
@@ -66,11 +77,18 @@ export default function Outfits({ allOrders = [], inventoryItems = [] }) {
             const outfitName = (o.outfitName || o.productName || '').trim()
             if (!outfitName || outfitName === 'Unknown') return
 
-            if (!inventoryNames.has(outfitName.toLowerCase())) {
-                const existing = orphaned.find(item => item.name.toLowerCase() === outfitName.toLowerCase())
+            // Check if outfit exists in inventory using case-insensitive and trimmed comparison
+            const matchesInventory = inventoryOutfits.some(item => 
+                item.name.toLowerCase().trim() === outfitName.toLowerCase().trim()
+            )
+
+            if (!matchesInventory) {
+                const existing = orphaned.find(item => item.name.toLowerCase().trim() === outfitName.toLowerCase().trim())
                 if (existing) {
                     existing.count += 1
-                    existing.orderIds.push(o.orderNumber || o.id)
+                    if (!existing.orderIds.includes(o.orderNumber || o.id)) {
+                        existing.orderIds.push(o.orderNumber || o.id)
+                    }
                 } else {
                     orphaned.push({
                         name: outfitName,

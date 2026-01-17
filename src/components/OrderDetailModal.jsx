@@ -1,6 +1,6 @@
 import React from 'react'
 
-export default function OrderDetailModal({ order, onClose, onEdit, onShip }) {
+export default function OrderDetailModal({ order, onClose, onEdit, onShip, onReturn }) {
     if (!order) return null
     return (
         <div className="fixed inset-0 bg-black/70 z-[60] flex items-end sm:items-center justify-center modal-enter backdrop-blur-sm">
@@ -22,9 +22,10 @@ export default function OrderDetailModal({ order, onClose, onEdit, onShip }) {
                             <p className="text-xs text-white/70 mt-1">Size: {order.size || 'M'}</p>
                         </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-3 mb-4">
+                    <div className="grid grid-cols-3 gap-3 mb-4">
                         <button onClick={() => { onEdit && onEdit(order) }} className="py-3 px-4 bg-lime-glow text-emerald-pine rounded-xl font-semibold text-sm hover:bg-lime-glow/90 active:scale-95 transition">Edit Order</button>
                         <button onClick={() => { onShip && onShip(order) }} className="py-3 px-4 bg-transparent border-2 border-lime-glow text-lime-glow rounded-xl font-semibold text-sm hover:bg-lime-glow/10 active:scale-95 transition">Ship / Complete</button>
+                        <button onClick={() => { onReturn && onReturn(order) }} className="py-3 px-4 bg-amber-900/40 border-2 border-amber-500 text-amber-200 rounded-xl font-semibold text-sm hover:bg-amber-900/60 active:scale-95 transition">Return</button>
                     </div>
                     <div className="bg-emerald-pine/40 border border-lime-glow/30 p-4 rounded-xl space-y-2">
                         <div className="flex justify-between text-sm"><span className="text-lime-glow font-semibold">₹{order.finalSellingPrice || order.orderTotal || 0}</span></div>

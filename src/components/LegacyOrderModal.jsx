@@ -5,18 +5,22 @@ import { FABRICS_COLLECTION, ORDERS_COLLECTION } from '../lib/utils'
 import { logOrderCreated, logOrderStatusChanged } from '../lib/notificationLogger'
 
 export default function LegacyOrderModal({ visible, inventoryItems = [], userProfile, onClose, onDataChanged, editOrder = null, initialForm = null }) {
-    const [form, setForm] = useState(initialForm || {
+    const defaultForm = {
         orderNumber: '', customerName: '', outfitName: '', size: 'M', fabricId: '',
         status: 'Sent to Tailor', sellingPrice: '', deductStock: false, cutAmount: '',
         notes: '', phone: '', address: '', discount: '', source: '', acquisitionCost: '',
         paymentMethod: 'Prepaid', city: '', state: '', codCharge: '', shippingCost: '',
         codRemittanceDate: '', stitchingCost: '', fabricCost: '', deliveryCost: ''
-    })
+    }
+
+    const [form, setForm] = useState(defaultForm)
     const [isUploading, setIsUploading] = useState(false)
     const [error, setError] = useState('')
 
-    // Update form when editOrder or initialForm changes
+    // Update form when modal becomes visible, editOrder, or initialForm changes
     React.useEffect(() => {
+        if (!visible) return
+
         if (editOrder) {
             setForm({
                 orderNumber: editOrder.orderNumber || '',
@@ -44,30 +48,39 @@ export default function LegacyOrderModal({ visible, inventoryItems = [], userPro
                 fabricCost: editOrder.fabricCost || '',
                 deliveryCost: editOrder.deliveryCost || ''
             })
-        } else if (initialForm) {
+        } else if (initialForm && Object.keys(initialForm).length > 0) {
             setForm(initialForm)
+        } else {
+            setForm(defaultForm)
         }
-    }, [editOrder, initialForm])
+    }, [visible, editOrder, initialForm])
 
     if (!visible) return null
 
-    const handleSubmit = async () => {
+    const handleSubmit = async (keepOpen = false) => {
         setIsUploading(true)
         setError('')
         try {
             const { orderNumber, customerName, outfitName, size, fabricId, status, sellingPrice, deductStock, cutAmount, notes, phone, address, discount, source, acquisitionCost, paymentMethod, city, state, codCharge, shippingCost, codRemittanceDate, stitchingCost, fabricCost, deliveryCost } = form
             if (!orderNumber || !customerName) throw new Error("Order # and Customer Name are required")
+            if (!phone || phone.trim() === '') throw new Error("Phone number is required")
+            if (!outfitName || outfitName.trim() === '') throw new Error("Outfit is required")
 
             // Outfit Validation and Sold Increment
             let linkedOutfit = null
-            if (outfitName) {
-                linkedOutfit = inventoryItems.find(i => i.name.toLowerCase() === outfitName.toLowerCase() && i.type === 'outfit')
-                if (!linkedOutfit) {
-                    throw new Error(`Outfit '${outfitName}' must be an existing outfit in Inventory.`)
-                }
+            linkedOutfit = inventoryItems.find(i => i.name.toLowerCase() === outfitName.toLowerCase() && i.type === 'outfit')
+            if (!linkedOutfit) {
+                throw new Error(`Outfit '${outfitName}' must be an existing outfit in Inventory.`)
             }
 
             const db = getDb()
+            const codDate = (paymentMethod || 'Prepaid') === 'COD' && !codRemittanceDate
+                ? (() => {
+                    const base = new Date()
+                    base.setDate(base.getDate() + 4)
+                    return base.toISOString()
+                })()
+                : codRemittanceDate || ''
             const orderData = {
                 orderNumber, customerName, outfitName: linkedOutfit ? linkedOutfit.name : outfitName, size, status, notes, phone, address, discount, source,
                 acquisitionCost: parseFloat(acquisitionCost) || 0,
@@ -76,11 +89,11 @@ export default function LegacyOrderModal({ visible, inventoryItems = [], userPro
                 state: state || '',
                 codCharge: parseFloat(codCharge) || 0,
                 shippingCost: parseFloat(shippingCost) || 0,
-                codRemittanceDate: codRemittanceDate || '',
+                codRemittanceDate: codDate,
                 stitchingCost: parseFloat(stitchingCost) || 0,
                 fabricCost: parseFloat(fabricCost) || 0,
                 deliveryCost: parseFloat(deliveryCost) || 0,
-                usedByEmail: userProfile?.name || 'Unknown', createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+                usedByEmail: userProfile?.name || 'Unknown', createdAt: serverTimestamp()
             }
 
             if (fabricId) {
@@ -147,15 +160,27 @@ export default function LegacyOrderModal({ visible, inventoryItems = [], userPro
             }
 
             // Reset form
-            setForm({
-                orderNumber: '', customerName: '', outfitName: '', size: 'M', fabricId: '',
-                status: 'Sent to Tailor', sellingPrice: '', deductStock: false, cutAmount: '',
-                notes: '', phone: '', address: '', discount: '', source: '', acquisitionCost: '',
-                paymentMethod: 'Prepaid', city: '', state: '', codCharge: '', shippingCost: '',
-                codRemittanceDate: '', stitchingCost: '', fabricCost: '', deliveryCost: ''
-            })
+            if (keepOpen) {
+                // Preserve all customer preferences for adding another order
+                setForm({
+                    orderNumber: '', customerName: form.customerName, outfitName: '', size: 'M', fabricId: '',
+                    status: 'Sent to Tailor', sellingPrice: '', deductStock: false, cutAmount: '',
+                    notes: '', phone: form.phone, address: form.address, discount: form.discount, source: form.source, acquisitionCost: form.acquisitionCost,
+                    paymentMethod: form.paymentMethod, city: form.city, state: form.state, codCharge: form.codCharge, shippingCost: form.shippingCost,
+                    codRemittanceDate: '', stitchingCost: form.stitchingCost, fabricCost: form.fabricCost, deliveryCost: form.deliveryCost
+                })
+            } else {
+                // Close modal - reset everything
+                setForm({
+                    orderNumber: '', customerName: '', outfitName: '', size: 'M', fabricId: '',
+                    status: 'Sent to Tailor', sellingPrice: '', deductStock: false, cutAmount: '',
+                    notes: '', phone: '', address: '', discount: '', source: '', acquisitionCost: '',
+                    paymentMethod: 'Prepaid', city: '', state: '', codCharge: '', shippingCost: '',
+                    codRemittanceDate: '', stitchingCost: '', fabricCost: '', deliveryCost: ''
+                })
+            }
             if (onDataChanged) await onDataChanged()
-            onClose()
+            if (!keepOpen) onClose()
         } catch (e) {
             console.error(e)
             setError(e.message || 'Failed to add order')
@@ -237,8 +262,8 @@ export default function LegacyOrderModal({ visible, inventoryItems = [], userPro
                                     type="number"
                                     className="w-full p-2 bg-amber-900/30 text-white rounded-lg border-2 border-amber-500/40 text-sm mb-2"
                                     placeholder="COD Charges (₹)"
-                                    value={form.acquisitionCost}
-                                    onChange={e => setForm({ ...form, acquisitionCost: e.target.value })}
+                                    value={form.codCharge}
+                                    onChange={e => setForm({ ...form, codCharge: e.target.value })}
                                 />
                             )}
                             <div className="grid grid-cols-2 gap-3 mb-2">
@@ -253,16 +278,48 @@ export default function LegacyOrderModal({ visible, inventoryItems = [], userPro
                                 <input type="number" className="w-full p-2 bg-gray-800 text-white rounded-lg border-2 border-lime-glow/40 text-sm" placeholder="Stitching Cost (₹)" value={form.stitchingCost} onChange={e => setForm({ ...form, stitchingCost: e.target.value })} />
                                 <input type="number" className="w-full p-2 bg-gray-800 text-white rounded-lg border-2 border-lime-glow/40 text-sm" placeholder="Fabric Cost (₹)" value={form.fabricCost} onChange={e => setForm({ ...form, fabricCost: e.target.value })} />
                             </div>
-                            <div className="grid grid-cols-2 gap-3">
+                            <div className="grid grid-cols-2 gap-3 mb-2">
                                 <input type="number" className="w-full p-2 bg-gray-800 text-white rounded-lg border-2 border-lime-glow/40 text-sm" placeholder="Delivery Cost (₹)" value={form.deliveryCost} onChange={e => setForm({ ...form, deliveryCost: e.target.value })} />
-                                <input type="number" className="w-full p-2 bg-gray-800 text-white rounded-lg border-2 border-lime-glow/40 text-sm" placeholder="Acquisition/COD (₹)" value={form.acquisitionCost} onChange={e => setForm({ ...form, acquisitionCost: e.target.value })} />
+                                <input type="number" className="w-full p-2 bg-gray-800 text-white rounded-lg border-2 border-lime-glow/40 text-sm" placeholder="Shipping Cost (₹)" value={form.shippingCost} onChange={e => setForm({ ...form, shippingCost: e.target.value })} />
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <input type="number" className="w-full p-2 bg-gray-800 text-white rounded-lg border-2 border-lime-glow/40 text-sm" placeholder="Acquisition Cost (₹)" value={form.acquisitionCost} onChange={e => setForm({ ...form, acquisitionCost: e.target.value })} />
+                                <input type="number" className="w-full p-2 bg-gray-800 text-white rounded-lg border-2 border-lime-glow/40 text-sm" placeholder="COD Charge (₹)" value={form.codCharge} onChange={e => setForm({ ...form, codCharge: e.target.value })} />
                             </div>
                         </div>
                     </div>
                     <div className="p-6 pt-4 border-t border-lime-glow/40 flex gap-3 flex-shrink-0 bg-gray-950">
-                        <button onClick={handleSubmit} disabled={isUploading} className="flex-1 bg-lime-glow text-emerald-pine py-3 rounded-xl font-bold shadow-lg hover:bg-lime-glow/90 active:scale-95 transition-all">
+                        <button onClick={() => handleSubmit(false)} disabled={isUploading} className="flex-1 bg-lime-glow text-emerald-pine py-3 rounded-xl font-bold shadow-lg hover:bg-lime-glow/90 active:scale-95 transition-all">
                             {isUploading ? 'Saving...' : (editOrder ? 'Update Order' : 'Add Record')}
                         </button>
+                        {!editOrder && (
+                            <button
+                                onClick={async () => {
+                                    // Submit and keep customer info for adding multiple orders
+                                    const prevCustomer = {
+                                        customerName: form.customerName,
+                                        phone: form.phone,
+                                        address: form.address,
+                                        city: form.city,
+                                        state: form.state,
+                                        paymentMethod: form.paymentMethod
+                                    }
+                                    await handleSubmit(true)
+                                    // Re-open with preserved customer details
+                                    setForm({
+                                        orderNumber: '', customerName: prevCustomer.customerName || '', outfitName: '', size: 'M', fabricId: '',
+                                        status: 'Sent to Tailor', sellingPrice: '', deductStock: false, cutAmount: '',
+                                        notes: '', phone: prevCustomer.phone || '', address: prevCustomer.address || '', discount: '', source: '', acquisitionCost: '',
+                                        paymentMethod: prevCustomer.paymentMethod || 'Prepaid', city: prevCustomer.city || '', state: prevCustomer.state || '', codCharge: '', shippingCost: '',
+                                        codRemittanceDate: '', stitchingCost: '', fabricCost: '', deliveryCost: ''
+                                    })
+                                }}
+                                disabled={isUploading}
+                                className="flex-1 bg-white/10 text-white py-3 rounded-xl font-bold shadow-lg hover:bg-white/20 active:scale-95 transition-all border border-lime-glow/40"
+                            >
+                                {isUploading ? 'Saving...' : 'Add Another for This Customer'}
+                            </button>
+                        )}
                     </div>
                 </div>
             </div >

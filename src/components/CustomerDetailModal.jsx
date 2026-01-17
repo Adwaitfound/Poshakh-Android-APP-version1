@@ -2,8 +2,9 @@ import React, { useState, useMemo } from 'react'
 import { Edit2, Save, X, AlertTriangle, Package, Trash2 } from 'lucide-react'
 import { getDb } from '../firebase'
 import { doc, updateDoc, deleteDoc } from 'firebase/firestore'
+import { parsePrice, formatCurrency } from '../lib/utils'
 
-export default function CustomerDetailModal({ customer, onClose, allOrders = [], inventoryItems = [], onDataChanged }) {
+export default function CustomerDetailModal({ customer, onClose, allOrders = [], inventoryItems = [], onDataChanged, onAddOrder }) {
     const [isEditing, setIsEditing] = useState(false)
     const [editForm, setEditForm] = useState({
         name: customer?.name || '',
@@ -92,10 +93,20 @@ export default function CustomerDetailModal({ customer, onClose, allOrders = [],
         }
 
         const getTotalCost = (order) => {
-            return (parseFloat(order.stitchingCost) || 0) +
-                (parseFloat(order.fabricCost) || 0) +
-                (parseFloat(order.deliveryCost) || 0) +
-                (parseFloat(order.acquisitionCost) || 0)
+            const qty = parseInt(order.quantity) || 1
+            const stitch = parseFloat(order.stitchingCost)
+            const stitchPer = parseFloat(order.stitchingCostPerPiece)
+            const fabric = parseFloat(order.fabricCost)
+            const fabricPer = parseFloat(order.fabricCostPerPiece)
+
+            const stitchTotal = (!Number.isNaN(stitch) && stitch > 0) ? stitch : ((!Number.isNaN(stitchPer) && stitchPer > 0) ? stitchPer * qty : 0)
+            const fabricTotal = (!Number.isNaN(fabric) && fabric > 0) ? fabric : ((!Number.isNaN(fabricPer) && fabricPer > 0) ? fabricPer * qty : 0)
+
+            const delivery = parseFloat(order.deliveryCost) || 0
+            const acquisition = parseFloat(order.acquisitionCost) || 0
+            const cod = parseFloat(order.codCharge) || 0
+
+            return stitchTotal + fabricTotal + delivery + acquisition + cod
         }
 
         const profitByOutfit = {}
@@ -219,6 +230,15 @@ export default function CustomerDetailModal({ customer, onClose, allOrders = [],
                 <div className="bg-emerald-pine p-6 border-b border-lime-glow/40 flex justify-between items-center flex-shrink-0 text-white">
                     <h3 className="font-bold text-lg">{isEditing ? 'Edit Customer' : customer.name}</h3>
                     <div className="flex items-center gap-2">
+                        {!isEditing && onAddOrder && (
+                            <button
+                                onClick={() => onAddOrder(customer)}
+                                className="px-4 py-2 bg-lime-glow text-emerald-pine text-xs font-bold rounded-lg hover:bg-lime-glow/90 transition"
+                                title="Add another order for this customer"
+                            >
+                                + Order
+                            </button>
+                        )}
                         {!isEditing && (
                             <button
                                 onClick={() => setIsEditing(true)}
@@ -488,15 +508,25 @@ function OrderRow({ order, outfitOptions, onUpdateOutfit, onDeleteOrder, onDataC
         return 0
     }
 
+    const getCostWithFallback = (totalKey, perPieceKey) => {
+        const qty = parseInt(order.quantity) || 1
+        const total = parseFloat(order[totalKey])
+        if (!Number.isNaN(total) && total > 0) return total
+        const perPiece = parseFloat(order[perPieceKey])
+        if (!Number.isNaN(perPiece) && perPiece > 0) return perPiece * qty
+        return 0
+    }
+
     const [editing, setEditing] = useState(false)
     const [selectedOutfit, setSelectedOutfit] = useState(order.outfitName)
     const [selectedSize, setSelectedSize] = useState(order.size || 'M')
     const [editingCosts, setEditingCosts] = useState(false)
     const [costs, setCosts] = useState({
-        stitchingCost: order.stitchingCost || 0,
-        fabricCost: order.fabricCost || 0,
-        deliveryCost: order.deliveryCost || 0,
-        acquisitionCost: order.acquisitionCost || 0
+        stitchingCost: getCostWithFallback('stitchingCost', 'stitchingCostPerPiece'),
+        fabricCost: getCostWithFallback('fabricCost', 'fabricCostPerPiece'),
+        deliveryCost: parseFloat(order.deliveryCost) || 0,
+        acquisitionCost: parseFloat(order.acquisitionCost) || 0,
+        codCharge: parseFloat(order.codCharge) || 0
     })
     const [savingCosts, setSavingCosts] = useState(false)
     const [editingPrice, setEditingPrice] = useState(false)
@@ -530,7 +560,8 @@ function OrderRow({ order, outfitOptions, onUpdateOutfit, onDeleteOrder, onDataC
                 stitchingCost: parseFloat(costs.stitchingCost) || 0,
                 fabricCost: parseFloat(costs.fabricCost) || 0,
                 deliveryCost: parseFloat(costs.deliveryCost) || 0,
-                acquisitionCost: parseFloat(costs.acquisitionCost) || 0
+                acquisitionCost: parseFloat(costs.acquisitionCost) || 0,
+                codCharge: parseFloat(costs.codCharge) || 0
             })
             setEditingCosts(false)
             if (onDataChanged) await onDataChanged()
@@ -845,15 +876,22 @@ function OrderRow({ order, outfitOptions, onUpdateOutfit, onDeleteOrder, onDataC
                                 />
                             </div>
                             <div>
-                                <label className="text-xs text-lime-glow/70">{paymentMethod === 'COD' ? 'COD Charge' : 'Acq/Other'}</label>
+                                <label className="text-xs text-lime-glow/70">COD Charge</label>
+                                <input
+                                    type="number"
+                                    value={costs.codCharge}
+                                    onChange={e => setCosts({ ...costs, codCharge: e.target.value })}
+                                    className="w-full p-1 bg-amber-900/30 border border-amber-500/50 rounded text-xs text-white"
+                                    placeholder="₹"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs text-lime-glow/70">Acq/Other</label>
                                 <input
                                     type="number"
                                     value={costs.acquisitionCost}
                                     onChange={e => setCosts({ ...costs, acquisitionCost: e.target.value })}
-                                    className={`w-full p-1 rounded text-xs text-white ${paymentMethod === 'COD'
-                                        ? 'bg-amber-900/30 border border-amber-500/50'
-                                        : 'bg-black/50 border border-lime-glow/50'
-                                        }`}
+                                    className="w-full p-1 bg-black/50 border border-lime-glow/50 rounded text-xs text-white"
                                     placeholder="₹"
                                 />
                             </div>
@@ -875,29 +913,26 @@ function OrderRow({ order, outfitOptions, onUpdateOutfit, onDeleteOrder, onDataC
                         </div>
                     </div>
                 ) : (
-                    <div className="grid grid-cols-4 gap-2 text-xs">
+                    <div className="grid grid-cols-3 gap-2 text-xs">
                         <div className="bg-black/50 border border-emerald-pine/60 px-2 py-1 rounded">
                             <p className="text-lime-glow/70">Stitching</p>
-                            <p className="font-bold text-white">₹{(costs.stitchingCost || 0).toFixed(0)}</p>
+                            <p className="font-bold text-white">{formatCurrency(costs.stitchingCost)}</p>
                         </div>
                         <div className="bg-black/50 border border-emerald-pine/60 px-2 py-1 rounded">
                             <p className="text-lime-glow/70">Fabric</p>
-                            <p className="font-bold text-white">₹{(costs.fabricCost || 0).toFixed(0)}</p>
+                            <p className="font-bold text-white">{formatCurrency(costs.fabricCost)}</p>
                         </div>
                         <div className="bg-black/50 border border-emerald-pine/60 px-2 py-1 rounded">
                             <p className="text-lime-glow/70">Delivery</p>
-                            <p className="font-bold text-white">₹{(costs.deliveryCost || 0).toFixed(0)}</p>
+                            <p className="font-bold text-white">{formatCurrency(costs.deliveryCost)}</p>
                         </div>
-                        <div className={`px-2 py-1 rounded ${paymentMethod === 'COD'
-                                ? 'bg-amber-900/20 border border-amber-500/60'
-                                : 'bg-black/50 border border-emerald-pine/60'
-                            }`}>
-                            <p className={paymentMethod === 'COD' ? 'text-amber-300/70' : 'text-lime-glow/70'}>
-                                {paymentMethod === 'COD' ? 'COD Charge' : 'Acq/Other'}
-                            </p>
-                            <p className={`font-bold ${paymentMethod === 'COD' ? 'text-amber-300' : 'text-white'}`}>
-                                ₹{(costs.acquisitionCost || 0).toFixed(0)}
-                            </p>
+                        <div className="bg-amber-900/20 border border-amber-500/60 px-2 py-1 rounded">
+                            <p className="text-amber-300/70">COD Charge</p>
+                            <p className="font-bold text-amber-300">{formatCurrency(costs.codCharge)}</p>
+                        </div>
+                        <div className="bg-black/50 border border-emerald-pine/60 px-2 py-1 rounded">
+                            <p className="text-lime-glow/70">Acq/Other</p>
+                            <p className="font-bold text-white">{formatCurrency(costs.acquisitionCost)}</p>
                         </div>
                     </div>
                 )}

@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react'
 import { Scissors, Clipboard, X, Trash2, Truck, Package, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react'
 import { getDb } from '../firebase'
 import { collection, addDoc, serverTimestamp, updateDoc, doc, increment } from 'firebase/firestore'
-import { FABRICS_COLLECTION, ORDERS_COLLECTION } from '../lib/utils'
+import { FABRICS_COLLECTION, ORDERS_COLLECTION, parsePrice, formatCurrency } from '../lib/utils'
 import { useNotification } from '../context/NotificationProvider'
 import { logOrderCreated, logOrderStatusChanged, logStockAdjusted } from '../lib/notificationLogger'
 
@@ -18,19 +18,165 @@ export default function Orders({
     onOpenShipping,
     onCreateProductionBatch,
     onReceiveBatch,
+    onCancelBatch,
     onDataChanged
 }) {
-    const [orderForm, setOrderForm] = useState({ orderNumber: '', fabricId: '', lengthToCut: '', outfitName: '', customerName: '', size: 'M', stitchingCost: '', acquisitionCost: '' })
-    const [stockOrderForm, setStockOrderForm] = useState({ orderNumber: '', outfitId: '', size: 'M', quantity: '1', customerName: '', phone: '', address: '' })
-    const [productionQueue, setProductionQueue] = useState([])
+    const [stockOrderForm, setStockOrderForm] = useState({ orderNumber: '', outfitId: '', size: 'M', quantity: '1', customerName: '', phone: '', address: '', sellingPrice: '', stitchingCost: '', fabricCost: '', productionCost: '', platform: 'Shopify' })
+    const [scanInput, setScanInput] = useState('')
+    const [scanStatus, setScanStatus] = useState(null) // 'found', 'notfound', null
     const [orderFilterStatus, setOrderFilterStatus] = useState('active')
     const [orderSort, setOrderSort] = useState('date_desc')
     const [isUploading, setIsUploading] = useState(false)
-    const [expandedSections, setExpandedSections] = useState({ batches: false, stock: false, production: false })
+    const [expandedSections, setExpandedSections] = useState({ batches: true, stock: false })
+    const [selectedOrders, setSelectedOrders] = useState(new Set())
+    const [deleteConfirm, setDeleteConfirm] = useState(null)
     const { notify } = useNotification()
 
-    const fabricOptions = useMemo(() => inventoryItems.filter(i => i.type === 'fabric' && i.currentLength > 0), [inventoryItems])
-    const outfitOptions = useMemo(() => inventoryItems.filter(i => i.type === 'outfit'), [inventoryItems])
+    // Multi-select helpers
+    const toggleSelectOrder = (orderId) => {
+        const newSet = new Set(selectedOrders)
+        if (newSet.has(orderId)) {
+            newSet.delete(orderId)
+        } else {
+            newSet.add(orderId)
+        }
+        setSelectedOrders(newSet)
+    }
+
+    const toggleSelectAll = (visibleOrderIds) => {
+        if (selectedOrders.size === visibleOrderIds.length) {
+            setSelectedOrders(new Set())
+        } else {
+            setSelectedOrders(new Set(visibleOrderIds))
+        }
+    }
+
+    const handleBulkDelete = () => {
+        if (selectedOrders.size === 0) return
+        setDeleteConfirm('bulk')
+    }
+
+    const confirmBulkDelete = async () => {
+        for (const orderId of selectedOrders) {
+            await onDeleteOrder(orderId)
+        }
+        setSelectedOrders(new Set())
+        setDeleteConfirm(null)
+    }
+
+    // Helper to parse dates from Firestore
+    const parseDate = (value) => {
+        if (!value) return null
+        if (value.toDate) return value.toDate()
+        const d = new Date(value)
+        return Number.isNaN(d.getTime()) ? null : d
+    }
+
+    // Handle barcode/AWB scan to prefill order form
+    const handleScanOrder = async (e) => {
+        e.preventDefault()
+        if (!scanInput.trim()) return
+
+        const searchTerm = scanInput.trim()
+        setScanStatus(null)
+
+        try {
+            // First try: search local orders by orderNumber or trackingNumber
+            const matchedOrder = allOrders.find(o => 
+                (o.orderNumber && o.orderNumber.toString() === searchTerm) ||
+                (o.trackingNumber && o.trackingNumber === searchTerm)
+            )
+
+            if (matchedOrder) {
+                // Prefill form with matched order data
+                const outfit = inventoryItems.find(i => i.id === matchedOrder.outfitId || i.name === matchedOrder.outfitName)
+                setStockOrderForm(prev => ({
+                    ...prev,
+                    orderNumber: matchedOrder.orderNumber || prev.orderNumber,
+                    outfitId: outfit?.id || prev.outfitId,
+                    customerName: matchedOrder.customerName || prev.customerName,
+                    phone: matchedOrder.phone || prev.phone,
+                    address: matchedOrder.address || prev.address,
+                    platform: matchedOrder.platform || 'Shopify',
+                    size: matchedOrder.size || 'M',
+                    quantity: matchedOrder.quantity?.toString() || '1'
+                }))
+                setScanStatus('found')
+                setScanInput('')
+                setTimeout(() => setScanStatus(null), 2000)
+                return
+            }
+
+            // Second try: fetch from Shiprocket by AWB (assume numeric scan is an AWB)
+            if (/^\d+$/.test(searchTerm)) {
+                try {
+                    const resp = await fetch(`http://localhost:3001/api/shiprocket/order?awb=${searchTerm}`)
+                    if (resp.ok) {
+                        const shippingData = await resp.json()
+                        
+                        // Auto-fill from Shiprocket data
+                        const outfit = inventoryItems.length > 0 ? inventoryItems[0] : null
+                        setStockOrderForm(prev => ({
+                            ...prev,
+                            orderNumber: shippingData.orderNumber || shippingData.awb || prev.orderNumber,
+                            outfitId: outfit?.id || prev.outfitId,
+                            customerName: shippingData.customerName || prev.customerName,
+                            phone: shippingData.phone || prev.phone,
+                            address: shippingData.address?.line1 || prev.address,
+                            platform: shippingData.platform || 'Unknown',
+                            size: prev.size,
+                            quantity: '1'
+                        }))
+                        setScanStatus('found')
+                        setScanInput('')
+                        setTimeout(() => setScanStatus(null), 2000)
+                        return
+                    }
+                } catch (err) {
+                    console.warn('Shiprocket lookup failed:', err)
+                    // Fall through to notfound
+                }
+            }
+
+            // Not found in local orders or Shiprocket
+            setScanStatus('notfound')
+            setTimeout(() => setScanStatus(null), 2000)
+        } catch (error) {
+            console.error('Scan error:', error)
+            setScanStatus('notfound')
+        }
+    }
+
+    // Helper to get COD remittance date
+    const getCodRemittanceDate = (order) => {
+        const explicitDate = parseDate(order.codRemittanceDate)
+        if (explicitDate) return explicitDate
+        const orderDate = parseDate(order.orderDate) || parseDate(order.createdAt) || new Date()
+        const expected = new Date(orderDate)
+        expected.setDate(expected.getDate() + 4)
+        return expected
+    }
+
+    // Helper to get COD countdown badge
+    const getCodCountdown = (order) => {
+        const paymentMethod = order.paymentMethod || order.paymentMode || 'Prepaid'
+        const isShipped = order.status === 'Order Shipped (Completed)'
+        
+        if (paymentMethod !== 'COD' || !isShipped) return null
+        
+        const remittanceDate = getCodRemittanceDate(order)
+        const now = new Date()
+        const daysLeft = Math.ceil((remittanceDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+        
+        if (daysLeft > 0) {
+            return { text: `COD in ${daysLeft} day${daysLeft > 1 ? 's' : ''}`, color: 'bg-green-600/80 border-green-500', type: 'pending' }
+        } else if (daysLeft === 0) {
+            return { text: 'COD due today', color: 'bg-orange-600/80 border-orange-500', type: 'today' }
+        } else {
+            return { text: `COD overdue by ${Math.abs(daysLeft)} day${Math.abs(daysLeft) > 1 ? 's' : ''}`, color: 'bg-red-600/80 border-red-500', type: 'overdue' }
+        }
+    }
+
     const outfitsWithStock = useMemo(() => {
         return inventoryItems.filter(item => {
             if (item.type !== 'outfit') return false
@@ -42,6 +188,46 @@ export default function Orders({
         }))
     }, [inventoryItems])
     const selectedOutfit = outfitsWithStock.find(o => o.id === stockOrderForm.outfitId)
+
+    // Find production batch for selected outfit and extract cost data
+    const outfitCostData = useMemo(() => {
+        if (!selectedOutfit) return null
+        
+        // Find the most recent completed batch for this outfit
+        const batch = productionBatches
+            .filter(b => b.outfitId === selectedOutfit.id && b.status === 'Completed')
+            .sort((a, b) => {
+                const dateA = a.receivedDate?.toDate ? a.receivedDate.toDate() : new Date(a.receivedDate)
+                const dateB = b.receivedDate?.toDate ? b.receivedDate.toDate() : new Date(b.receivedDate)
+                return dateB - dateA
+            })[0]
+        
+        if (!batch) return null
+        
+        return {
+            stitchingCostPerPiece: batch.stitchingCostPerPiece || 0,
+            fabricCostPerPiece: batch.fabricCostPerPiece || 0,
+            accessoriesCostPerPiece: batch.accessoriesCostPerPiece || 0,
+            packagingCostPerPiece: batch.packagingCostPerPiece || 0,
+            otherCostPerPiece: batch.otherCostPerPiece || 0,
+            totalCostPerPiece: batch.totalCostPerPiece || 0,
+            vendorName: batch.vendorName || 'N/A',
+            batchId: batch.id
+        }
+    }, [selectedOutfit, productionBatches])
+
+    // Auto-fill costs when outfit changes
+    React.useEffect(() => {
+        if (outfitCostData) {
+            setStockOrderForm(prev => ({
+                ...prev,
+                stitchingCost: outfitCostData.stitchingCostPerPiece.toString(),
+                fabricCost: outfitCostData.fabricCostPerPiece.toString(),
+                productionCost: outfitCostData.totalCostPerPiece.toString(),
+                sellingPrice: selectedOutfit?.sellingPrice?.toString() || ''
+            }))
+        }
+    }, [outfitCostData, selectedOutfit?.sellingPrice])
 
     const filteredOrders = useMemo(() => {
         let list = [...allOrders]
@@ -62,83 +248,6 @@ export default function Orders({
         })
         return list
     }, [allOrders, orderFilterStatus, orderSort])
-
-    const handleAddToQueue = (e) => {
-        e.preventDefault()
-        const { orderNumber, fabricId, lengthToCut, outfitName, size, stitchingCost, acquisitionCost } = orderForm
-        if (!orderNumber || !fabricId) return
-
-        const fabric = inventoryItems.find(f => f.id === fabricId)
-        const cutAmount = parseFloat(lengthToCut) || 0
-
-        const item = {
-            ...orderForm,
-            fabricName: fabric?.name || 'Unknown',
-            unit: fabric?.unit || 'm',
-            cutAmount,
-            stitchingCost: parseFloat(stitchingCost) || 0,
-            acquisitionCost: parseFloat(acquisitionCost) || 0,
-            imageUrl: fabric?.imageUrl || ''
-        }
-        setProductionQueue([...productionQueue, item])
-        setOrderForm({ ...orderForm, lengthToCut: '', outfitName: '', customerName: '', stitchingCost: '', acquisitionCost: '' })
-    }
-
-    const removeQueueItem = (idx) => setProductionQueue(productionQueue.filter((_, i) => i !== idx))
-
-    const handleBatchSubmit = async () => {
-        setIsUploading(true)
-        try {
-            const db = getDb()
-            const promises = productionQueue.map(async (item) => {
-                if (item.fabricId) {
-                    const fabricRef = doc(db, FABRICS_COLLECTION, item.fabricId)
-                    if (item.cutAmount > 0) {
-                        await updateDoc(fabricRef, { currentLength: increment(-item.cutAmount), updatedAt: serverTimestamp() })
-                        await addDoc(collection(fabricRef, 'history'), {
-                            amountUsed: item.cutAmount,
-                            orderNumber: item.orderNumber,
-                            productName: item.outfitName,
-                            status: 'Sent to Tailor',
-                            type: 'CUT',
-                            usedByEmail: userProfile?.name,
-                            usedAt: serverTimestamp()
-                        })
-                    }
-                }
-                await addDoc(collection(db, ORDERS_COLLECTION), {
-                    fabricId: item.fabricId || '',
-                    fabricName: item.fabricName,
-                    outfitName: item.outfitName,
-                    orderNumber: item.orderNumber,
-                    customerName: item.customerName,
-                    cutAmount: item.cutAmount,
-                    unit: item.unit,
-                    size: item.size,
-                    stitchingCost: item.stitchingCost,
-                    acquisitionCost: item.acquisitionCost,
-                    imageUrl: item.imageUrl,
-                    status: 'Sent to Tailor',
-                    usedByEmail: userProfile?.name,
-                    createdAt: serverTimestamp()
-                })
-            })
-            await Promise.all(promises)
-            setProductionQueue([])
-            if (onDataChanged) await onDataChanged()
-
-            // Log to notifications
-            for (const item of productionQueue) {
-                await logOrderCreated(item.orderNumber, item.customerName || 'N/A', userProfile?.name)
-            }
-
-            notify.success(`✅ Added ${productionQueue.length} order(s) to production`)
-        } catch (err) {
-            console.error('Batch submit error:', err)
-            notify.error('Failed to add orders to production')
-        }
-        setIsUploading(false)
-    }
 
     const handleQuickReceive = async (orderId) => {
         const order = allOrders.find(o => o.id === orderId)
@@ -221,9 +330,9 @@ export default function Orders({
         }
     }
 
-    const handleStockOrderSubmit = async (e) => {
+    const handleStockOrderSubmit = async (e, keepCustomerInfo = false) => {
         e.preventDefault()
-        const { orderNumber, outfitId, size, quantity, customerName, phone, address } = stockOrderForm
+        const { orderNumber, outfitId, size, quantity, customerName, phone, address, fabricCost, stitchingCost, sellingPrice, productionCost, platform } = stockOrderForm
 
         if (!orderNumber || !outfitId || !size || !quantity) {
             alert('Please fill all required fields')
@@ -248,7 +357,12 @@ export default function Orders({
         try {
             const db = getDb()
 
-            // Create order
+            // Create order with cost breakdown
+            const sellingPriceNum = parseFloat(sellingPrice) || 0
+            const productionCostNum = parseFloat(productionCost) || outfit.productionCostPerPiece || 0
+            const fabricCostNum = parseFloat(fabricCost) || 0
+            const stitchingCostNum = parseFloat(stitchingCost) || 0
+            
             await addDoc(collection(db, ORDERS_COLLECTION), {
                 orderNumber,
                 outfitId,
@@ -259,28 +373,58 @@ export default function Orders({
                 customerName,
                 phone,
                 address,
-                productionCostPerPiece: outfit.productionCostPerPiece || 0,
+                platform,
+                // Per-piece costs
+                productionCostPerPiece: productionCostNum,
+                fabricCostPerPiece: fabricCostNum,
+                stitchingCostPerPiece: stitchingCostNum,
+                sellingPrice: sellingPriceNum,
+                profitPerPiece: sellingPriceNum - productionCostNum,
+                // Total costs for customer history display
+                finalSellingPrice: sellingPriceNum * qty,
+                orderTotal: sellingPriceNum * qty,
+                stitchingCost: stitchingCostNum * qty,
+                fabricCost: fabricCostNum * qty,
                 status: 'Ready to Ship',
                 orderType: 'stock',
                 usedByEmail: userProfile?.name,
                 createdAt: serverTimestamp()
             })
 
-            // Deduct from outfit stock
-            const currentStock = outfit.stockBreakdown || {}
-            await updateDoc(doc(db, FABRICS_COLLECTION, outfitId), {
-                stockBreakdown: {
-                    ...currentStock,
-                    [size]: availableStock - qty
-                },
+            // Deduct from outfit stock using atomic increment (FIXED)
+            const outfitRef = doc(db, FABRICS_COLLECTION, outfitId)
+            await updateDoc(outfitRef, {
+                [`stockBreakdown.${size}`]: increment(-qty),
                 updatedAt: serverTimestamp()
             })
 
-            alert(`✅ Order #${orderNumber} created!\n${qty} x ${outfit.name} (${size})\nStock deducted: ${availableStock} → ${availableStock - qty}`)
+            // Log stock deduction to outfit history
+            await addDoc(collection(outfitRef, 'history'), {
+                type: 'STOCK_DEDUCTION',
+                amount: -qty,
+                size,
+                orderNumber,
+                customerName: customerName || 'N/A',
+                status: 'Order Created',
+                user: {
+                    name: userProfile?.displayName || userProfile?.name || 'Unknown',
+                    email: userProfile?.email || ''
+                },
+                timestamp: serverTimestamp()
+            })
 
-            setStockOrderForm({ orderNumber: '', outfitId: '', size: 'M', quantity: '1', customerName: '', phone: '', address: '' })
+            await logStockAdjusted(outfit.name, size, -qty, `Order #${orderNumber}`, userProfile?.name)
+
+            // Reset form - keep customer info if requested
+            if (keepCustomerInfo) {
+                setStockOrderForm({ orderNumber: '', outfitId: '', size: 'M', quantity: '1', customerName, phone, address, sellingPrice: '', stitchingCost: '', fabricCost: '', productionCost: '', platform })
+                notify.success(`✅ Order #${orderNumber} created! ${qty}x ${outfit.name} (${size}) - Ready for next order`)
+            } else {
+                setStockOrderForm({ orderNumber: '', outfitId: '', size: 'M', quantity: '1', customerName: '', phone: '', address: '', sellingPrice: '', stitchingCost: '', fabricCost: '', productionCost: '', platform: 'Shopify' })
+                notify.success(`✅ Order #${orderNumber} created! ${qty}x ${outfit.name} (${size})`)
+            }
+
             if (onDataChanged) await onDataChanged()
-            notify.success(`✅ Order #${orderNumber} created! ${qty}x ${outfit.name} (${size})`)
         } catch (error) {
             console.error('Stock order error:', error)
             notify.error('Error creating order: ' + error.message)
@@ -368,16 +512,22 @@ export default function Orders({
                                     {recentBatches.map((batch, idx) => (
                                         <div
                                             key={idx}
-                                            onClick={() => onReceiveBatch && onReceiveBatch(batch)}
-                                            className="bg-white/10 backdrop-blur-sm p-3 rounded-xl border border-lime-glow/30 cursor-pointer hover:bg-white/20 active:scale-[0.98] transition-all"
+                                            className="bg-white/10 backdrop-blur-sm p-3 rounded-xl border border-lime-glow/30 transition-all"
                                         >
-                                            <div className="flex justify-between items-start">
-                                                <div className="flex-1">
+                                            <div className="flex justify-between items-start gap-3">
+                                                <div 
+                                                    className="flex-1 cursor-pointer hover:opacity-80"
+                                                    onClick={() => onReceiveBatch && onReceiveBatch(batch)}
+                                                >
                                                     <div className="flex items-center gap-2">
                                                         <p className="font-bold text-sm text-lime-glow">{batch.outfitName}</p>
                                                         {batch.status === 'Completed' ? (
                                                             <span className="bg-lime-glow/20 text-lime-glow px-2 py-0.5 rounded text-[10px] font-bold border border-lime-glow/50">
                                                                 ✓ Received
+                                                            </span>
+                                                        ) : batch.status === 'Cancelled' ? (
+                                                            <span className="bg-red-900/40 text-red-400 px-2 py-0.5 rounded text-[10px] font-bold border border-red-500/40">
+                                                                ✗ Cancelled
                                                             </span>
                                                         ) : (
                                                             <span className="bg-amber-600/80 text-white px-2 py-0.5 rounded text-[10px] font-bold border border-amber-500">
@@ -387,9 +537,23 @@ export default function Orders({
                                                     </div>
                                                     <p className="text-xs opacity-80 text-lime-glow/70">{batch.totalReceivedPieces || batch.totalPieces} pcs from {batch.fabricName}</p>
                                                 </div>
-                                                <div className="text-right">
-                                                    <p className="text-xs font-bold text-lime-glow">₹{(batch.totalCostPerPiece || 0).toFixed(0)}/pc</p>
-                                                    <p className="text-xs opacity-70 text-lime-glow/70">{formatDate(batch.receivedDate || batch.createdAt)}</p>
+                                                <div className="flex items-start gap-2">
+                                                    <div className="text-right">
+                                                        <p className="text-xs font-bold text-lime-glow">₹{(batch.totalCostPerPiece || 0).toFixed(0)}/pc</p>
+                                                        <p className="text-xs opacity-70 text-lime-glow/70">{formatDate(batch.receivedDate || batch.createdAt)}</p>
+                                                    </div>
+                                                    {batch.status !== 'Completed' && batch.status !== 'Cancelled' && (
+                                                        <button
+                                                            onClick={(e) => {
+                                                                e.stopPropagation()
+                                                                onCancelBatch && onCancelBatch(batch)
+                                                            }}
+                                                            className="p-1 hover:bg-red-900/40 rounded transition-all"
+                                                            title="Cancel batch"
+                                                        >
+                                                            <X className="w-4 h-4 text-red-400 hover:text-red-300" />
+                                                        </button>
+                                                    )}
                                                 </div>
                                             </div>
                                         </div>
@@ -413,26 +577,57 @@ export default function Orders({
             )}
 
             {/* Ready Stock Orders */}
-            <div className="bg-emerald-pine p-5 rounded-3xl shadow-card text-white">
+            <div className="bg-gradient-to-b from-emerald-900 via-emerald-950 to-emerald-900 p-5 rounded-3xl shadow-card text-white border border-emerald-700/60">
                 <div
-                    className="cursor-pointer mb-3"
+                    className="cursor-pointer mb-4 flex items-start justify-between gap-3"
                     onClick={() => setExpandedSections(prev => ({ ...prev, stock: !prev.stock }))}
                 >
-                    <h3 className="text-lg font-bold flex items-center gap-2">
-                        <Package className="w-5 h-5" />
-                        Ready Stock Orders
-                        {expandedSections.stock ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                    </h3>
-                    <p className="text-xs opacity-90 mt-1">Fulfill customer orders from produced inventory</p>
+                    <div>
+                        <h3 className="text-xl font-extrabold flex items-center gap-2">
+                            <Package className="w-5 h-5" />
+                            Ready Stock Orders
+                        </h3>
+                        <p className="text-sm text-emerald-100/80 mt-1">Fulfill customer orders from produced inventory</p>
+                    </div>
+                    {expandedSections.stock ? <ChevronUp className="w-5 h-5 text-emerald-200" /> : <ChevronDown className="w-5 h-5 text-emerald-200" />}
                 </div>
 
                 {expandedSections.stock && (
-                    <form onSubmit={handleStockOrderSubmit} className="space-y-3">
-                        <div className="grid grid-cols-2 gap-3">
-                            <div>
-                                <label className="text-xs font-bold opacity-90">Order Number *</label>
+                    <>
+                        {/* Scan Order/AWB Section */}
+                        <form onSubmit={handleScanOrder} className="mb-4 bg-lime-glow/5 border border-lime-glow/30 p-4 rounded-2xl">
+                            <label className="text-xs font-bold text-lime-glow uppercase block mb-2">🔍 Scan Order Number / AWB</label>
+                            <div className="flex gap-2">
                                 <input
-                                    className="w-full p-2.5 rounded-xl mt-1 bg-white text-emerald-pine text-sm border-2 border-lime-glow font-semibold"
+                                    type="text"
+                                    value={scanInput}
+                                    onChange={e => setScanInput(e.target.value)}
+                                    placeholder="Scan barcode or type order number..."
+                                    autoFocus
+                                    className="flex-1 px-4 py-2 rounded-xl bg-white text-emerald-pine border-2 border-lime-glow font-semibold focus:outline-none focus:ring-2 focus:ring-lime-glow"
+                                />
+                                <button
+                                    type="submit"
+                                    className="px-4 py-2 bg-lime-glow text-emerald-pine rounded-xl font-bold hover:bg-lime-glow/90 transition-colors"
+                                >
+                                    Search
+                                </button>
+                            </div>
+                            {scanStatus === 'found' && (
+                                <p className="text-xs text-lime-300 mt-2">✅ Order found! Form prefilled.</p>
+                            )}
+                            {scanStatus === 'notfound' && (
+                                <p className="text-xs text-amber-300 mt-2">⚠️ Order not found. Use manual entry below.</p>
+                            )}
+                        </form>
+
+                        {/* Main Order Form */}
+                        <form onSubmit={handleStockOrderSubmit} className="space-y-3">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div>
+                                <label className="text-xs font-bold text-emerald-100/80 uppercase">Order Number *</label>
+                                <input
+                                    className="w-full px-4 py-3 rounded-xl mt-1 bg-emerald-900/70 text-lime-50 text-sm border border-lime-400/60 font-semibold placeholder-emerald-200/60 focus:outline-none focus:border-lime-200"
                                     value={stockOrderForm.orderNumber}
                                     onChange={e => setStockOrderForm({ ...stockOrderForm, orderNumber: e.target.value })}
                                     placeholder="e.g., 1001"
@@ -440,9 +635,21 @@ export default function Orders({
                                 />
                             </div>
                             <div>
-                                <label className="text-xs font-bold opacity-90">Select Outfit *</label>
+                                <label className="text-xs font-bold text-emerald-100/80 uppercase">Platform *</label>
                                 <select
-                                    className="w-full p-2.5 rounded-xl mt-1 bg-white text-emerald-pine text-sm border-2 border-lime-glow font-semibold"
+                                    className="w-full px-4 py-3 rounded-xl mt-1 bg-emerald-900/70 text-lime-50 text-sm border border-lime-400/60 font-semibold focus:outline-none focus:border-lime-200"
+                                    value={stockOrderForm.platform}
+                                    onChange={e => setStockOrderForm({ ...stockOrderForm, platform: e.target.value })}
+                                    required
+                                >
+                                    <option value="Shopify">Shopify</option>
+                                    <option value="Shopdeck">Shopdeck</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="text-xs font-bold text-emerald-100/80 uppercase">Select Outfit *</label>
+                                <select
+                                    className="w-full px-4 py-3 rounded-xl mt-1 bg-emerald-900/70 text-lime-50 text-sm border border-lime-400/60 font-semibold focus:outline-none focus:border-lime-200"
                                     value={stockOrderForm.outfitId}
                                     onChange={e => setStockOrderForm({ ...stockOrderForm, outfitId: e.target.value })}
                                     required
@@ -458,15 +665,15 @@ export default function Orders({
                         </div>
 
                         {selectedOutfit && (
-                            <div className="bg-white backdrop-blur-sm p-3 rounded-xl">
-                                <p className="text-xs font-bold mb-2">Available Stock:</p>
+                            <div className="bg-emerald-900/70 border border-emerald-700/60 p-3 rounded-xl">
+                                <p className="text-xs font-bold text-emerald-100 mb-2 uppercase">Available Stock</p>
                                 <div className="flex gap-2 flex-wrap">
-                                    {['S', 'M', 'L', 'XL', 'XXL'].map(size => {
+                                    {['XS','S', 'M', 'L', 'XL', 'XXL'].map(size => {
                                         const stock = parseInt(selectedOutfit.stockBreakdown?.[size]) || 0
                                         if (stock === 0) return null
                                         return (
-                                            <div key={size} className="bg-white px-2 py-1 rounded-lg text-xs">
-                                                <span className="font-bold">{size}:</span> {stock}
+                                            <div key={size} className="px-3 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-lime-400/80 to-emerald-300/80 text-emerald-900 shadow">
+                                                {size}: {stock}
                                             </div>
                                         )
                                     })}
@@ -474,16 +681,16 @@ export default function Orders({
                             </div>
                         )}
 
-                        <div className="grid grid-cols-2 gap-3">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div>
-                                <label className="text-xs font-bold opacity-90">Size *</label>
+                                <label className="text-xs font-bold text-emerald-100/80 uppercase">Size *</label>
                                 <select
-                                    className="w-full p-2.5 rounded-xl mt-1 bg-white text-emerald-pine text-sm border-2 border-lime-glow font-semibold"
+                                    className="w-full px-4 py-3 rounded-xl mt-1 bg-emerald-900/70 text-lime-50 text-sm border border-lime-400/60 font-semibold focus:outline-none focus:border-lime-200"
                                     value={stockOrderForm.size}
                                     onChange={e => setStockOrderForm({ ...stockOrderForm, size: e.target.value })}
                                     required
                                 >
-                                    {['S', 'M', 'L', 'XL', 'XXL'].map(size => (
+                                    {['XS','S', 'M', 'L', 'XL', 'XXL'].map(size => (
                                         <option key={size} value={size}>
                                             {size} {selectedOutfit && `(${parseInt(selectedOutfit.stockBreakdown?.[size]) || 0} available)`}
                                         </option>
@@ -491,11 +698,11 @@ export default function Orders({
                                 </select>
                             </div>
                             <div>
-                                <label className="text-xs font-bold opacity-90">Quantity *</label>
+                                <label className="text-xs font-bold text-emerald-100/80 uppercase">Quantity *</label>
                                 <input
                                     type="number"
                                     min="1"
-                                    className="w-full p-2.5 rounded-xl mt-1 bg-white text-emerald-pine text-sm border-2 border-lime-glow font-semibold"
+                                    className="w-full px-4 py-3 rounded-xl mt-1 bg-emerald-900/70 text-lime-50 text-sm border border-lime-400/60 font-semibold placeholder-emerald-200/60 focus:outline-none focus:border-lime-200"
                                     value={stockOrderForm.quantity}
                                     onChange={e => setStockOrderForm({ ...stockOrderForm, quantity: e.target.value })}
                                     placeholder="1"
@@ -504,30 +711,96 @@ export default function Orders({
                             </div>
                         </div>
 
+                        {/* Production Cost Breakdown */}
+                        {selectedOutfit && outfitCostData && (
+                            <div className="bg-emerald-900/70 border border-lime-400/40 p-4 rounded-xl space-y-3">
+                                <div className="flex justify-between items-center mb-2">
+                                    <p className="text-xs font-bold text-emerald-100/80 uppercase">💰 Production Costs</p>
+                                    {outfitCostData.batchId && <p className="text-[10px] text-emerald-100/60">From batch</p>}
+                                </div>
+                                
+                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+                                    <div>
+                                        <label className="block text-emerald-100/70 mb-1">Fabric</label>
+                                        <input
+                                            type="number"
+                                            step="0.01"
+                                            className="w-full px-2 py-2 rounded-lg bg-emerald-950 text-lime-50 border border-emerald-700/60 text-[11px] font-semibold"
+                                            value={stockOrderForm.fabricCost}
+                                            onChange={e => setStockOrderForm({ ...stockOrderForm, fabricCost: e.target.value })}
+                                        />
+                                        <p className="text-[9px] text-emerald-100/50 mt-1">{formatCurrency(stockOrderForm.fabricCost)}</p>
+                                    </div>
+                                    <div>
+                                        <label className="block text-emerald-100/70 mb-1">Stitching</label>
+                                        <input
+                                            type="number"
+                                            step="0.01"
+                                            className="w-full px-2 py-2 rounded-lg bg-emerald-950 text-lime-50 border border-emerald-700/60 text-[11px] font-semibold"
+                                            value={stockOrderForm.stitchingCost}
+                                            onChange={e => setStockOrderForm({ ...stockOrderForm, stitchingCost: e.target.value })}
+                                        />
+                                        <p className="text-[9px] text-emerald-100/50 mt-1">{formatCurrency(stockOrderForm.stitchingCost)}</p>
+                                    </div>
+                                    <div>
+                                        <label className="block text-emerald-100/70 mb-1">Selling Price</label>
+                                        <input
+                                            type="number"
+                                            step="0.01"
+                                            className="w-full px-2 py-2 rounded-lg bg-emerald-950 text-lime-50 border border-emerald-700/60 text-[11px] font-semibold"
+                                            value={stockOrderForm.sellingPrice}
+                                            onChange={e => setStockOrderForm({ ...stockOrderForm, sellingPrice: e.target.value })}
+                                        />
+                                        <p className="text-[9px] text-emerald-100/50 mt-1">{formatCurrency(stockOrderForm.sellingPrice)}</p>
+                                    </div>
+                                </div>
+
+                                {/* Cost Breakdown Summary */}
+                                <div className="bg-emerald-950/80 p-2 rounded-lg border border-emerald-700/60 space-y-1">
+                                    <div className="flex justify-between text-[10px] text-emerald-100/80">
+                                        <span>Total Production Cost/piece:</span>
+                                        <span className="font-bold">{formatCurrency(stockOrderForm.productionCost)}</span>
+                                    </div>
+                                    <div className="flex justify-between text-[10px] text-emerald-100/80">
+                                        <span>Selling Price:</span>
+                                        <span className="font-bold">{formatCurrency(stockOrderForm.sellingPrice)}</span>
+                                    </div>
+                                    <div className="flex justify-between text-[10px] font-bold pt-1 border-t border-emerald-700/60">
+                                        <span className={parsePrice(stockOrderForm.sellingPrice) - parsePrice(stockOrderForm.productionCost) >= 0 ? 'text-lime-300' : 'text-red-300'}>
+                                            Profit/piece:
+                                        </span>
+                                        <span className={parsePrice(stockOrderForm.sellingPrice) - parsePrice(stockOrderForm.productionCost) >= 0 ? 'text-lime-300' : 'text-red-300'}>
+                                            {formatCurrency(parsePrice(stockOrderForm.sellingPrice) - parsePrice(stockOrderForm.productionCost))}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
                         <div>
-                            <label className="text-xs font-bold opacity-90">Customer Name</label>
+                            <label className="text-xs font-bold text-emerald-100/80 uppercase">Customer Name</label>
                             <input
-                                className="w-full p-2.5 rounded-xl mt-1 bg-white text-emerald-pine text-sm border-2 border-lime-glow font-semibold"
+                                className="w-full px-4 py-3 rounded-xl mt-1 bg-emerald-900/70 text-lime-50 text-sm border border-lime-400/60 font-semibold placeholder-emerald-200/60 focus:outline-none focus:border-lime-200"
                                 value={stockOrderForm.customerName}
                                 onChange={e => setStockOrderForm({ ...stockOrderForm, customerName: e.target.value })}
                                 placeholder="Customer name"
                             />
                         </div>
 
-                        <div className="grid grid-cols-2 gap-3">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div>
-                                <label className="text-xs font-bold opacity-90">Phone</label>
+                                <label className="text-xs font-bold text-emerald-100/80 uppercase">Phone</label>
                                 <input
-                                    className="w-full p-2.5 rounded-xl mt-1 bg-white text-emerald-pine text-sm border-2 border-lime-glow font-semibold"
+                                    className="w-full px-4 py-3 rounded-xl mt-1 bg-emerald-900/70 text-lime-50 text-sm border border-lime-400/60 font-semibold placeholder-emerald-200/60 focus:outline-none focus:border-lime-200"
                                     value={stockOrderForm.phone}
                                     onChange={e => setStockOrderForm({ ...stockOrderForm, phone: e.target.value })}
                                     placeholder="Phone number"
                                 />
                             </div>
                             <div>
-                                <label className="text-xs font-bold opacity-90">Address</label>
+                                <label className="text-xs font-bold text-emerald-100/80 uppercase">Address</label>
                                 <input
-                                    className="w-full p-2.5 rounded-xl mt-1 bg-white text-emerald-pine text-sm border-2 border-lime-glow font-semibold"
+                                    className="w-full px-4 py-3 rounded-xl mt-1 bg-emerald-900/70 text-lime-50 text-sm border border-lime-400/60 font-semibold placeholder-emerald-200/60 focus:outline-none focus:border-lime-200"
                                     value={stockOrderForm.address}
                                     onChange={e => setStockOrderForm({ ...stockOrderForm, address: e.target.value })}
                                     placeholder="Delivery address"
@@ -535,122 +808,30 @@ export default function Orders({
                             </div>
                         </div>
 
-                        <button
-                            type="submit"
-                            disabled={isUploading || !stockOrderForm.outfitId}
-                            className="w-full bg-green-tea text-emerald-pine font-bold py-3 rounded-xl hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                            {isUploading ? 'Creating Order...' : 'Create Order'}
-                        </button>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <button
+                                type="submit"
+                                disabled={isUploading || !stockOrderForm.outfitId}
+                                className="w-full bg-gradient-to-r from-lime-400 to-emerald-300 text-emerald-900 font-black py-3 rounded-xl shadow-lg hover:shadow-emerald-700/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                {isUploading ? 'Creating...' : 'Create Order'}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={(e) => handleStockOrderSubmit(e, true)}
+                                disabled={isUploading || !stockOrderForm.outfitId}
+                                className="w-full bg-emerald-900/70 text-lime-50 border border-lime-400/60 font-semibold py-3 rounded-xl hover:border-lime-200 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                {isUploading ? 'Saving...' : 'Create & Add Another'}
+                            </button>
+                        </div>
 
                         {outfitsWithStock.length === 0 && (
-                            <div className="text-center py-4 bg-white backdrop-blur-sm rounded-xl">
-                                <p className="text-xs opacity-80">No outfits in stock. Create production batches first!</p>
+                            <div className="text-center py-4 bg-emerald-900/60 border border-emerald-700/60 rounded-xl">
+                                <p className="text-xs text-emerald-100/80">No outfits in stock. Create production batches first!</p>
                             </div>
                         )}
                     </form>
-                )}
-            </div>
-
-            {/* Production Form */}
-            {/* Production Form */}
-            <div className="bg-white p-5 rounded-3xl shadow-soft border-l-4 border-brand border dark:border-gray-800">
-                <div className="flex justify-between items-center mb-4">
-                    <div
-                        className="flex-1 cursor-pointer"
-                        onClick={() => setExpandedSections(prev => ({ ...prev, production: !prev.production }))}
-                    >
-                        <h3 className="text-lg font-bold text-black flex items-center gap-2">
-                            <Scissors className="w-5 h-5 text-brand" /> Production Queue
-                            {expandedSections.production ? <ChevronUp className="w-5 h-5 text-gray-400" /> : <ChevronDown className="w-5 h-5 text-gray-400" />}
-                        </h3>
-                    </div>
-                    {expandedSections.production && onShowLegacyModal && (
-                        <button onClick={onShowLegacyModal} className="text-xs bg-gray-100 text-gray-600 dark:text-gray-400 dark:text-gray-500 px-3 py-1.5 rounded-full font-bold hover:bg-gray-200 flex items-center gap-1">
-                            + Log Past Order
-                        </button>
-                    )}
-                </div>
-
-                {expandedSections.production && (
-                    <>
-                        <form onSubmit={handleAddToQueue} className="space-y-3">
-                            <div className="grid grid-cols-2 gap-3">
-                                <div>
-                                    <label className="text-xs font-bold text-emerald-pine uppercase">Order #</label>
-                                    <input className="w-full p-2 bg-white text-black rounded-xl mt-1 border-2 border-lime-glow font-semibold text-sm placeholder-gray-400" value={orderForm.orderNumber} onChange={e => setOrderForm({ ...orderForm, orderNumber: e.target.value })} placeholder="101" />
-                                </div>
-                                <div>
-                                    <label className="text-xs font-bold text-emerald-pine uppercase">Select Fabric</label>
-                                    <select className="w-full p-2 bg-white text-black rounded-xl mt-1 border-2 border-lime-glow font-semibold text-sm appearance-none cursor-pointer" value={orderForm.fabricId} onChange={e => setOrderForm({ ...orderForm, fabricId: e.target.value })}>
-                                        <option value="">-- Choose --</option>
-                                        {fabricOptions.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
-                                    </select>
-                                </div>
-                            </div>
-
-                            <div className="grid grid-cols-3 gap-3">
-                                <div>
-                                    <label className="text-xs font-bold text-emerald-pine uppercase">Cut Amt</label>
-                                    <input type="number" step="0.1" className="w-full p-2 bg-white text-black rounded-xl mt-1 border-2 border-lime-glow font-semibold text-sm placeholder-gray-400" value={orderForm.lengthToCut} onChange={e => setOrderForm({ ...orderForm, lengthToCut: e.target.value })} placeholder="0.0" />
-                                </div>
-                                <div>
-                                    <label className="text-xs font-bold text-emerald-pine uppercase">Stitching ₹</label>
-                                    <input type="number" className="w-full p-2 bg-white text-black rounded-xl mt-1 border-2 border-lime-glow font-semibold text-sm placeholder-gray-400" value={orderForm.stitchingCost} onChange={e => setOrderForm({ ...orderForm, stitchingCost: e.target.value })} placeholder="0.00" />
-                                </div>
-                                <div>
-                                    <label className="text-xs font-bold text-emerald-pine uppercase">Acq. Cost ₹</label>
-                                    <input type="number" className="w-full p-2 bg-white text-black rounded-xl mt-1 border-2 border-lime-glow font-semibold text-sm placeholder-gray-400" value={orderForm.acquisitionCost} onChange={e => setOrderForm({ ...orderForm, acquisitionCost: e.target.value })} placeholder="0.00" />
-                                </div>
-                            </div>
-
-                            <div>
-                                <label className="text-xs font-bold text-emerald-pine uppercase">Target Outfit</label>
-                                <input list="outfit-suggestions" className="w-full p-2 bg-white text-black rounded-xl mt-1 border-2 border-lime-glow font-semibold text-sm placeholder-gray-400" value={orderForm.outfitName} onChange={e => setOrderForm({ ...orderForm, outfitName: e.target.value })} placeholder="e.g. Mirae" />
-                                <datalist id="outfit-suggestions">
-                                    {outfitOptions.map(o => <option key={o.id} value={o.name} />)}
-                                </datalist>
-                            </div>
-
-                            <div>
-                                <label className="text-xs font-bold text-emerald-pine uppercase block mb-1">Target Size</label>
-                                <div className="flex bg-emerald-pine/10 p-1 rounded-xl gap-1 overflow-x-auto no-scrollbar border-2 border-lime-glow">
-                                    {['S', 'M', 'L', 'XL', 'XXL', 'Custom'].map(s => (
-                                        <button key={s} type="button" onClick={() => setOrderForm({ ...orderForm, size: s })} className={`px-3 py-2 rounded-lg text-xs font-bold transition-all ${orderForm.size === s ? 'bg-lime-glow text-emerald-pine shadow-md' : 'text-lime-glow hover:bg-lime-glow/20'}`}>
-                                            {s}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-
-                            <button type="submit" className="w-full bg-lime-glow text-emerald-pine py-2 rounded-xl font-bold text-sm hover:shadow-lg">+ Add to Queue</button>
-                        </form>
-
-                        {productionQueue.length > 0 && (
-                            <div className="mt-4 border-t pt-4">
-                                <div className="flex justify-between items-center mb-2">
-                                    <h4 className="text-xs font-bold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">Pending Batch ({productionQueue.length})</h4>
-                                    <button onClick={() => setProductionQueue([])} className="text-[10px] text-red-500 hover:underline">Clear All</button>
-                                </div>
-                                <div className="space-y-2 mb-4">
-                                    {productionQueue.map((item, idx) => (
-                                        <div key={idx} className="flex justify-between items-center text-sm bg-gray-50 dark:bg-gray-900 p-2 rounded-lg">
-                                            <div>
-                                                <span className="font-bold text-brand">{item.fabricName}</span>
-                                                {item.cutAmount > 0 && <span className="text-xs text-gray-500 dark:text-gray-400 dark:text-gray-500 ml-2">Cut: {item.cutAmount} {item.unit}</span>}
-                                                <p className="text-[10px] text-gray-400">#{item.orderNumber} → {item.outfitName} ({item.size})</p>
-                                            </div>
-                                            <button onClick={() => removeQueueItem(idx)} className="text-red-400 hover:text-red-600">
-                                                <X className="w-4 h-4" />
-                                            </button>
-                                        </div>
-                                    ))}
-                                </div>
-                                <button onClick={handleBatchSubmit} disabled={isUploading} className="w-full bg-lime-glow text-emerald-pine py-3 rounded-xl font-bold text-sm shadow-md hover:shadow-lg">
-                                    {isUploading ? 'Processing...' : 'Submit Batch to Production'}
-                                </button>
-                            </div>
-                        )}
                     </>
                 )}
             </div>
@@ -673,11 +854,48 @@ export default function Orders({
                     </div>
                 </div>
                 <div className="space-y-3">
-                    {filteredOrders.map(order => (
-                        <div key={order.id} onClick={() => onViewOrder && onViewOrder(order)} className={`bg-emerald-pine/20 border-2 border-lime-glow/40 p-4 rounded-2xl shadow-card flex flex-col gap-3 relative cursor-pointer hover:border-lime-glow/60 active:scale-95 transition-all ${order.status === 'Cancelled' ? 'opacity-60 grayscale' : ''}`}>
+                    {filteredOrders.length > 0 && (
+                        <div className="bg-emerald-pine/20 p-2 md:p-3 rounded-xl border border-lime-glow/60 flex items-center gap-2 md:gap-3 flex-wrap">
+                            <input
+                                type="checkbox"
+                                checked={selectedOrders.size === filteredOrders.length}
+                                onChange={() => toggleSelectAll(filteredOrders.map(o => o.id))}
+                                className="w-4 h-4 md:w-5 md:h-5 rounded border-2 border-lime-glow cursor-pointer flex-shrink-0"
+                            />
+                            <span className="text-xs md:text-sm font-bold text-emerald-pine">
+                                {selectedOrders.size === filteredOrders.length ? 'Deselect All' : 'Select All'}
+                            </span>
+                            {selectedOrders.size > 0 && (
+                                <div className="ml-auto flex items-center gap-1 md:gap-2">
+                                    <span className="text-xs md:text-sm font-bold text-lime-glow">{selectedOrders.size}</span>
+                                    <button
+                                        onClick={handleBulkDelete}
+                                        className="px-2 md:px-3 py-1 bg-red-600 text-white rounded-lg text-xs font-bold hover:bg-red-700 transition flex items-center gap-1 flex-shrink-0"
+                                    >
+                                        <Trash2 className="w-3 h-3" />
+                                        <span className="hidden md:inline">Delete</span>
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    {filteredOrders.map(order => {
+                        const isSelected = selectedOrders.has(order.id)
+                        return (
+                            <div key={order.id} onClick={() => onViewOrder && onViewOrder(order)} className={`bg-emerald-pine/20 border-2 p-2 md:p-4 rounded-2xl shadow-card relative cursor-pointer transition-all ${isSelected ? 'border-blue-500 bg-blue-50/10' : 'border-lime-glow/40 hover:border-lime-glow/60'} ${order.status === 'Cancelled' ? 'opacity-60 grayscale' : ''}`}>
+                            {/* Checkbox */}
+                            <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={(e) => {
+                                    e.stopPropagation()
+                                    toggleSelectOrder(order.id)
+                                }}
+                                className="absolute top-2 left-2 md:top-3 md:left-3 w-4 h-4 md:w-5 md:h-5 rounded border-2 border-lime-glow cursor-pointer flex-shrink-0 z-10"
+                            />
                             {order.status !== 'Cancelled' && order.status !== 'Order Shipped (Completed)' && (
-                                <button onClick={(e) => { e.stopPropagation(); onCancelOrder && onCancelOrder(order) }} className="absolute top-3 right-3 text-white/40 hover:text-red-500">
-                                    <X className="w-5 h-5" />
+                                <button onClick={(e) => { e.stopPropagation(); onCancelOrder && onCancelOrder(order) }} className="absolute top-2 right-2 md:top-3 md:right-3 text-white/40 hover:text-red-500 z-20">
+                                    <X className="w-4 h-4 md:w-5 md:h-5" />
                                 </button>
                             )}
                             {(order.status === 'Cancelled' || order.status === 'Order Shipped (Completed)') && (
@@ -685,60 +903,113 @@ export default function Orders({
                                     e.stopPropagation();
                                     console.log('Delete button clicked for order:', order.id);
                                     onDeleteOrder && onDeleteOrder(order.id);
-                                }} className="absolute bottom-3 right-3 text-white/40 hover:text-red-500 z-10 p-2">
-                                    <Trash2 className="w-5 h-5" />
+                                }} className="absolute bottom-2 right-2 md:bottom-3 md:right-3 text-white/40 hover:text-red-500 z-10 p-1">
+                                    <Trash2 className="w-4 h-4 md:w-5 md:h-5" />
                                 </button>
                             )}
-                            <div className="flex gap-3">
-                                <img src={order.imageUrl} className="w-14 h-14 rounded-xl bg-gray-800 object-cover" />
-                                <div className="flex-1">
-                                    <div className="flex items-center gap-2 flex-wrap">
-                                        <span className="font-mono text-lime-glow font-bold text-sm">#{order.orderNumber}</span>
-                                        {order.orderType === 'stock' && (
-                                            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-lime-glow/20 text-lime-glow border border-lime-glow/50">
-                                                STOCK
+                            {/* Main content - 2 rows on mobile */}
+                            <div className="flex gap-2 md:gap-3 mt-1">
+                                <img src={order.imageUrl} className="w-12 h-12 md:w-14 md:h-14 rounded-xl bg-gray-800 object-cover flex-shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                    {/* Order number and badges - mobile optimized */}
+                                    <div className="flex items-center gap-1 md:gap-2 flex-wrap mb-0.5 md:mb-1">
+                                        <span className="font-mono text-lime-glow font-bold text-xs md:text-sm">#{order.orderNumber}</span>
+                                        {(() => {
+                                            // Normalize platform: Shopodeck -> Shopdeck, everything else (including empty) -> Shopify
+                                            const normalizedPlatform = (order.platform === 'Shopodeck' || order.platform === 'Shopdeck') ? 'Shopdeck' : 'Shopify'
+                                            return (
+                                                <span className={`text-[8px] md:text-[10px] font-bold px-1.5 md:px-2 py-0.5 rounded border whitespace-nowrap ${
+                                                    normalizedPlatform === 'Shopify' 
+                                                        ? 'bg-green-600/80 text-white border-green-500' 
+                                                        : 'bg-blue-600/80 text-white border-blue-500'
+                                                }`}>
+                                                    {normalizedPlatform === 'Shopify' ? '🛍️ SHOPIFY' : '🏪 SHOPDECK'}
+                                                </span>
+                                            )
+                                        })()}
+                                        {order.source && (order.source.includes('Shopify') || order.source.includes('Shiprocket')) && (
+                                            <span className="text-[8px] md:text-[10px] font-bold px-1.5 md:px-2 py-0.5 rounded bg-purple-600/80 text-white border border-purple-500 whitespace-nowrap">
+                                                {order.source.includes('Shopify') ? '🛍️ SHOPIFY' : '📦 SHIPROCKET'}
                                             </span>
                                         )}
-                                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${order.status === 'Sent to Tailor' ? 'bg-amber-600/80 text-white border-amber-500' : order.status === 'Ready to Ship' ? 'bg-emerald-700/80 text-white border-emerald-600' : order.status.includes('Shipped') ? 'bg-lime-glow/20 text-lime-glow border-lime-glow/50' : 'bg-gray-700 text-white border-gray-600'}`}>
+                                    </div>
+                                    {/* Status badge */}
+                                    <div className="mb-0.5 md:mb-1">
+                                        <span className={`text-[8px] md:text-[10px] font-bold px-1.5 md:px-2 py-0.5 rounded border inline-block ${order.status === 'Sent to Tailor' ? 'bg-amber-600/80 text-white border-amber-500' : order.status === 'Ready to Ship' ? 'bg-emerald-700/80 text-white border-emerald-600' : order.status.includes('Shipped') ? 'bg-lime-glow/20 text-lime-glow border-lime-glow/50' : 'bg-gray-700 text-white border-gray-600'}`}>
                                             {order.status}
                                         </span>
                                     </div>
-                                    <h4 className="font-bold text-white text-sm">
+                                    {/* Outfit name and size - condensed */}
+                                    <h4 className="font-bold text-white text-xs md:text-sm leading-tight">
                                         {order.outfitName || 'Unspecified'}
-                                        <span className="text-xs bg-emerald-pine/60 border border-lime-glow/40 px-1 rounded ml-1 text-lime-glow">
+                                    </h4>
+                                    <div className="flex items-center gap-1 text-[10px] md:text-xs text-lime-glow">
+                                        <span className="bg-emerald-pine/60 border border-lime-glow/40 px-1 rounded">
                                             {order.quantity ? `${order.quantity}x ` : ''}Size {order.size}
                                         </span>
-                                    </h4>
-                                    {order.orderType === 'stock' ? (
-                                        <p className="text-xs text-lime-glow">₹{(order.productionCostPerPiece || 0).toFixed(2)}/pc</p>
-                                    ) : (
-                                        <p className="text-xs text-lime-glow">Cost: ₹{order.stitchingCost || 0}</p>
-                                    )}
+                                        {order.orderType === 'stock' ? (
+                                            <span>₹{(order.productionCostPerPiece || 0).toFixed(0)}/pc</span>
+                                        ) : (
+                                            <span>₹{order.stitchingCost || 0}</span>
+                                        )}
+                                    </div>
                                 </div>
                             </div>
+
+                            {/* Action button - mobile optimized */}
                             {order.status !== 'Cancelled' && (
-                                <div className="bg-emerald-pine/40 border border-lime-glow/30 p-2 rounded-xl flex justify-between items-center mt-1">
+                                <div className="mt-1.5 md:mt-2">
                                     {order.status === 'Sent to Tailor' ? (
-                                        <button onClick={(e) => { e.stopPropagation(); handleQuickReceive(order.id) }} className="text-xs font-bold text-lime-glow hover:underline">
+                                        <button onClick={(e) => { e.stopPropagation(); handleQuickReceive(order.id) }} className="w-full text-[10px] md:text-xs font-bold text-lime-glow bg-emerald-pine/40 border border-lime-glow/30 rounded px-2 py-1 hover:bg-emerald-pine/60 transition">
                                             Mark Received
                                         </button>
                                     ) : order.status === 'Received from Tailor' || order.status === 'Ready to Ship' ? (
-                                        <button onClick={(e) => { e.stopPropagation(); onOpenShipping && onOpenShipping(order.id) }} className="text-xs font-bold text-lime-glow hover:underline flex items-center gap-1">
+                                        <button onClick={(e) => { e.stopPropagation(); onOpenShipping && onOpenShipping(order.id) }} className="w-full text-[10px] md:text-xs font-bold text-lime-glow bg-emerald-pine/40 border border-lime-glow/30 rounded px-2 py-1 hover:bg-emerald-pine/60 transition flex items-center justify-center gap-1">
                                             <Truck className="w-3 h-3" /> Ship It
                                         </button>
                                     ) : (
-                                        <span className="text-[10px] text-lime-glow font-bold">Done</span>
+                                        <span className="text-[10px] md:text-xs text-lime-glow font-bold block text-center">Done</span>
                                     )}
                                 </div>
                             )}
-                            {(order.customerName || order.phone || order.address) && (
-                                <div className="text-[10px] text-white/80 mt-1 border-t border-lime-glow/30 pt-1">
-                                    {order.customerName} {order.phone && `• ${order.phone}`} {order.address && `• ${order.address}`}
+
+                            {/* Customer info - on mobile, hide if space is tight */}
+                            {(order.customerName || order.phone) && (
+                                <div className="text-[8px] md:text-[10px] text-white/70 mt-1 pt-1 border-t border-lime-glow/30">
+                                    <div className="truncate">{order.customerName}</div>
+                                    {order.phone && <div className="truncate text-white/60">{order.phone}</div>}
                                 </div>
                             )}
                         </div>
-                    ))}
+                        )
+                    })}
                 </div>
+
+            {/* Bulk Delete Confirmation Modal */}
+            {deleteConfirm === 'bulk' && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" onClick={() => setDeleteConfirm(null)}>
+                    <div className="bg-white rounded-2xl p-6 max-w-sm mx-4 shadow-xl" onClick={e => e.stopPropagation()}>
+                        <h3 className="text-lg font-bold text-gray-900 mb-2">Delete {selectedOrders.size} Orders?</h3>
+                        <p className="text-sm text-gray-600 mb-4">
+                            This will permanently delete <strong>{selectedOrders.size} orders</strong>. This action cannot be undone.
+                        </p>
+                        <div className="flex gap-2">
+                            <button
+                                onClick={() => setDeleteConfirm(null)}
+                                className="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg font-semibold hover:bg-gray-200 transition"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={confirmBulkDelete}
+                                className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg font-semibold hover:bg-red-700 transition"
+                            >
+                                Delete All
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
             </div>
         </div>
     )

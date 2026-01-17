@@ -1,0 +1,22 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "3d93016fdd299a87783f702c1495d6a5"
+name = "moshakh order import"
+application_url = "https://shopify.dev/apps/default-app-home"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = true
+
+[webhooks]
+api_version = "2026-04"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_orders,read_products"
+
+[auth]
+redirect_urls = [ 
+  "https://shopify.dev/apps/default-app-home/api/auth",
+  "http://localhost:3001/auth/callback"
+]
