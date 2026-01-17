@@ -1,0 +1,17 @@
+
+> poshakh-manager-app@0.1.0 dev
+> vite
+
+[33mThe CJS build of Vite's Node API is deprecated. See https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.[39m
+Port 5173 is in use, trying another one...
+Port 5174 is in use, trying another one...
+Port 5175 is in use, trying another one...
+
+  VITE v5.4.21  ready in 611 ms
+
+  ➜  Local:   http://localhost:5176/
+  ➜  Network: use --host to expose
+  ➜  press h + enter to show help
+8:43:37 PM [vite] hmr update /src/components/Inventory.jsx, /src/styles.css?direct, /src/styles.css, /src/context/AuthProvider.jsx, /src/components/SheetImport.jsx, /src/components/Orders.jsx, /src/components/AddItem.jsx
+8:43:37 PM [vite] hmr invalidate /src/context/AuthProvider.jsx Could not Fast Refresh ("useAuth" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+8:43:37 PM [vite] hmr update /src/App.jsx, /src/styles.css?direct, /src/styles.css
