@@ -14,6 +14,10 @@ app.use(express.json());
 
 const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
 let SHOPIFY_ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN; // may be set via OAuth
+const SHOPIFY_CLIENT_ID = process.env.SHOPIFY_CLIENT_ID;
+const SHOPIFY_CLIENT_SECRET = process.env.SHOPIFY_CLIENT_SECRET;
+const SHOPIFY_SCOPES = process.env.SHOPIFY_SCOPES || 'read_orders,read_products';
+const SHOPIFY_REDIRECT_URL = process.env.SHOPIFY_REDIRECT_URL || `http://localhost:${PORT}/auth/callback`;
 const SHIPROCKET_EMAIL = process.env.SHIPROCKET_EMAIL;
 const SHIPROCKET_PASSWORD = process.env.SHIPROCKET_PASSWORD;
 let SHIPROCKET_TOKEN = process.env.SHIPROCKET_TOKEN;
@@ -114,7 +118,7 @@ app.get('/api/shopify/order', async (req, res) => {
   }
 
   try {
-    const url = `https://${SHOPIFY_STORE_DOMAIN}/admin/api/2024-10/orders/${id}.json`;
+    const url = `https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-01/orders/${id}.json`;
     
     const response = await fetch(url, {
       method: 'GET',
@@ -194,7 +198,7 @@ app.get('/api/shopify/orderByNumber', async (req, res) => {
   `;
   const variables = { query: `name:${name}` };
   try {
-    const resp = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2024-10/graphql.json`, {
+    const resp = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/admin/api/2026-01/graphql.json`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

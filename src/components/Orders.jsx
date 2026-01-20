@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react'
+import Papa from 'papaparse'
 import { Scissors, Clipboard, X, Trash2, Truck, Package, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react'
 import { getDb } from '../firebase'
 import { collection, addDoc, serverTimestamp, updateDoc, doc, increment } from 'firebase/firestore'
@@ -26,6 +27,8 @@ export default function Orders({
     const [scanStatus, setScanStatus] = useState(null) // 'found', 'notfound', null
     const [orderFilterStatus, setOrderFilterStatus] = useState('active')
     const [orderSort, setOrderSort] = useState('date_desc')
+    const [fromDate, setFromDate] = useState('')
+    const [toDate, setToDate] = useState('')
     const [isUploading, setIsUploading] = useState(false)
     const [expandedSections, setExpandedSections] = useState({ batches: true, stock: false })
     const [selectedOrders, setSelectedOrders] = useState(new Set())
@@ -54,6 +57,31 @@ export default function Orders({
     const handleBulkDelete = () => {
         if (selectedOrders.size === 0) return
         setDeleteConfirm('bulk')
+    }
+
+    const exportToCSV = () => {
+        if (filteredOrders.length === 0) return
+        const headers = ['Order Number', 'Customer Name', 'Phone', 'Status', 'Platform', 'Outfit', 'Size', 'Qty', 'Amount', 'Date']
+        const rows = filteredOrders.map(o => [
+            o.orderNumber || '',
+            o.customerName || '',
+            o.phone || '',
+            o.status || '',
+            o.platform || '',
+            o.outfitName || o.productName || '',
+            o.size || '',
+            o.quantity || 1,
+            o.orderTotal || o.finalSellingPrice || o.sellingPrice || 0,
+            (parseDate(o.createdAt) || new Date()).toLocaleDateString('en-IN')
+        ])
+        const csv = [headers, ...rows].map(r => r.join(',')).join('\n')
+        const blob = new Blob([csv], { type: 'text/csv' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `orders-${new Date().toISOString().split('T')[0]}.csv`
+        a.click()
+        URL.revokeObjectURL(url)
     }
 
     const confirmBulkDelete = async () => {
@@ -230,24 +258,94 @@ export default function Orders({
     }, [outfitCostData, selectedOutfit?.sellingPrice])
 
     const filteredOrders = useMemo(() => {
+        const toNumber = (val) => {
+            const n = parsePrice(val || 0)
+            return Number.isFinite(n) ? n : 0
+        }
+
+        const toDateMs = (order) => {
+            const primary = parseDate(order.createdAt || order.orderDate || order.shippedAt)
+            return primary ? primary.getTime() : 0
+        }
+
+        const orderValue = (order) => {
+            const base = order.orderTotal ?? order.finalSellingPrice ?? order.totalPrice ?? order.sellingPrice ?? order.amount ?? 0
+            const qty = parseInt(order.quantity) || 1
+            return toNumber(base) || toNumber(base) * qty
+        }
+
         let list = [...allOrders]
         list = list.filter(o => o.status !== 'Imported')
+
+        // Date range filter
+        if (fromDate) {
+            const fromMs = new Date(fromDate).setHours(0, 0, 0, 0)
+            list = list.filter(o => toDateMs(o) >= fromMs)
+        }
+        if (toDate) {
+            const toMs = new Date(toDate).setHours(23, 59, 59, 999)
+            list = list.filter(o => toDateMs(o) <= toMs)
+        }
 
         if (orderFilterStatus === 'active') {
             list = list.filter(o => o.status !== 'Cancelled' && o.status !== 'Order Shipped (Completed)')
         } else if (orderFilterStatus === 'completed') {
             list = list.filter(o => o.status === 'Order Shipped (Completed)' || o.status === 'Cancelled')
+        } else if (orderFilterStatus === 'cod_overdue') {
+            list = list.filter(o => {
+                const cod = getCodCountdown(o)
+                return cod && cod.type === 'overdue'
+            })
+        }
+
+        // Date range filter
+        if (fromDate || toDate) {
+            const from = fromDate ? new Date(fromDate + 'T00:00:00') : null
+            const to = toDate ? new Date(toDate + 'T23:59:59') : null
+            list = list.filter(o => {
+                const d = parseDate(o.createdAt || o.orderDate || o.shippedAt)
+                if (!d) return false
+                if (from && d < from) return false
+                if (to && d > to) return false
+                return true
+            })
         }
 
         list.sort((a, b) => {
-            const dateA = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0
-            const dateB = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0
-            if (orderSort === 'date_desc') return dateB - dateA
-            if (orderSort === 'date_asc') return dateA - dateB
+            if (orderSort === 'date_desc') return toDateMs(b) - toDateMs(a)
+            if (orderSort === 'date_asc') return toDateMs(a) - toDateMs(b)
+            if (orderSort === 'value_desc') return orderValue(b) - orderValue(a)
+            if (orderSort === 'value_asc') return orderValue(a) - orderValue(b)
+            if (orderSort === 'status') return (a.status || '').localeCompare(b.status || '')
+            if (orderSort === 'platform') return (a.platform || '').localeCompare(b.platform || '')
             return 0
         })
         return list
-    }, [allOrders, orderFilterStatus, orderSort])
+    }, [allOrders, orderFilterStatus, orderSort, fromDate, toDate])
+
+    const handleExportCSV = () => {
+        const rows = filteredOrders.map(o => ({
+            OrderNumber: o.orderNumber || o.id,
+            Status: o.status || '',
+            Platform: o.platform || '',
+            Customer: o.customerName || '',
+            Phone: o.phone || '',
+            Size: o.size || '',
+            Quantity: o.quantity || 1,
+            Value: o.orderTotal ?? o.finalSellingPrice ?? o.sellingPrice ?? '',
+            CreatedAt: (() => { const d = parseDate(o.createdAt || o.orderDate); return d ? d.toISOString() : '' })(),
+        }))
+        const csv = Papa.unparse(rows)
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = `orders_${new Date().toISOString().slice(0,10)}.csv`
+        document.body.appendChild(link)
+        link.click()
+        link.remove()
+        URL.revokeObjectURL(url)
+    }
 
     const handleQuickReceive = async (orderId) => {
         const order = allOrders.find(o => o.id === orderId)
@@ -842,15 +940,27 @@ export default function Orders({
                     <h3 className="text-lg font-bold text-white flex items-center gap-2">
                         <Clipboard className="w-5 h-5 text-lime-glow" /> Order History
                     </h3>
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 flex-wrap items-center">
                         <select className="text-xs bg-white border-2 border-lime-glow rounded-xl px-3 py-2 text-emerald-pine font-semibold shadow-md hover:shadow-lg" value={orderSort} onChange={e => setOrderSort(e.target.value)}>
                             <option value="date_desc">Newest</option>
                             <option value="date_asc">Oldest</option>
+                            <option value="value_desc">Value (High)</option>
+                            <option value="value_asc">Value (Low)</option>
+                            <option value="status">Status (A-Z)</option>
+                            <option value="platform">Platform (A-Z)</option>
                         </select>
                         <select className="text-xs bg-white border-2 border-lime-glow rounded-xl px-3 py-2 text-emerald-pine font-semibold shadow-md hover:shadow-lg" value={orderFilterStatus} onChange={e => setOrderFilterStatus(e.target.value)}>
                             <option value="active">Active Only</option>
                             <option value="completed">Completed/Cancelled</option>
+                            <option value="cod_overdue">COD Overdue</option>
                         </select>
+                        <input type="date" className="text-xs bg-white border-2 border-lime-glow rounded-xl px-3 py-2 text-emerald-pine font-semibold shadow-md" value={fromDate} onChange={e => setFromDate(e.target.value)} />
+                        <span className="text-xs text-white/70">to</span>
+                        <input type="date" className="text-xs bg-white border-2 border-lime-glow rounded-xl px-3 py-2 text-emerald-pine font-semibold shadow-md" value={toDate} onChange={e => setToDate(e.target.value)} />
+                        {(fromDate || toDate) && (
+                            <button onClick={() => { setFromDate(''); setToDate('') }} className="text-xs px-3 py-2 rounded-xl bg-white text-emerald-pine font-semibold border-2 border-lime-glow/60">Clear</button>
+                        )}
+                        <button onClick={handleExportCSV} className="text-xs px-3 py-2 rounded-xl bg-lime-glow text-emerald-pine font-bold border-2 border-lime-glow hover:shadow-lg">Export CSV</button>
                     </div>
                 </div>
                 <div className="space-y-3">

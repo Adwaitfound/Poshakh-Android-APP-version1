@@ -12,6 +12,26 @@ export default function InventoryDetailModal({ item, soldCounts = {}, onClose, o
     const soldFromCounts = soldCounts[item.id] ?? soldCounts[item.name] ?? 0
     const sold = (parseInt(soldFromCounts) || 0) + (parseInt(item.manualSoldCount) || 0)
 
+    const downloadImage = async () => {
+        if (!item.imageUrl) return
+        try {
+            const response = await fetch(item.imageUrl)
+            if (!response.ok) throw new Error('Image fetch failed')
+            const blob = await response.blob()
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = `${item.name || 'inventory-image'}.jpg`
+            document.body.appendChild(a)
+            a.click()
+            a.remove()
+            URL.revokeObjectURL(url)
+        } catch (err) {
+            console.error('Download failed', err)
+            alert('Could not download the image. Please try again.')
+        }
+    }
+
     return (
         <div className="fixed inset-0 bg-black/70 z-[60] flex items-end sm:items-center justify-center backdrop-blur-sm">
             <div className="w-full sm:max-w-2xl h-[90vh] sm:h-auto max-h-[90vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl shadow-2xl bg-[#0e1c1b] text-white border border-emerald-600/30">
@@ -35,6 +55,13 @@ export default function InventoryDetailModal({ item, soldCounts = {}, onClose, o
                             <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
                         </div>
                     </div>
+
+                    <button
+                        onClick={downloadImage}
+                        className="w-full py-3 px-4 rounded-2xl border border-emerald-500/70 bg-emerald-900/40 text-emerald-50 font-semibold shadow-lg hover:border-emerald-300/80 transition"
+                    >
+                        Download Image
+                    </button>
 
                     {/* Actions */}
                     <div className="grid grid-cols-2 gap-3">
