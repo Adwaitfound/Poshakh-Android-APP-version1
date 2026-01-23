@@ -91,6 +91,12 @@ export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
 
             for (const order of orders) {
                 try {
+                    // Skip orders without shiprocketOrderId (can't track them)
+                    if (!order.shiprocketOrderId) {
+                        console.warn(`Skipping order ${order.orderNumber} - no shiprocketOrderId`)
+                        continue
+                    }
+
                     // Filter out undefined values
                     const cleanOrder = Object.fromEntries(
                         Object.entries(order).filter(([_, value]) => value !== undefined)
