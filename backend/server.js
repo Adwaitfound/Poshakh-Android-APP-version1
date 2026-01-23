@@ -447,23 +447,22 @@ app.get('/api/shiprocket/orders', async (req, res) => {
     // Debug: Log extracted customer data
     if (shipments.length > 0) {
       const first = shipments[0];
-      console.log('✅ Customer data extracted:', {
+      console.log('✅ Available ID fields:', {
+        id: first.id,
+        order_id: first.order_id,
+        channel_order_id: first.channel_order_id,
+        channel_id: first.channel_id,
         customerName: first.customer_name,
-        phone: first.customer_phone,
-        email: first.customer_email,
-        city: first.customer_city,
-        state: first.customer_state,
-        items: (first.products || []).length,
       });
     }
 
     // Transform each order into our format
     const transformed = shipments.map(s => ({
-      orderNumber: s.order_id || s.channel_order_id || s.order_reference || `SHP-${s.shipment_id}`,
-      shiprocketOrderId: s.order_id,
-      shipmentId: s.shipment_id,
-      awb: s.awb_code || '',
-      trackingNumber: s.awb_code || '',
+      orderNumber: s.channel_order_id || s.order_id || s.order_reference || `SHP-${s.id}`,
+      shiprocketOrderId: s.id, // Use 'id' field from orders endpoint
+      shipmentId: s.shipment_id || s.id,
+      awb: s.awb_code || s.last_mile_awb || '',
+      trackingNumber: s.awb_code || s.last_mile_awb || '',
       orderDate: s.order_date || s.created_date || new Date().toISOString(),
       // Try multiple field names for customer data
       customerName: s.consignee_name || s.customer_name || s.shipping_customer_name || s.buyer_name || '',

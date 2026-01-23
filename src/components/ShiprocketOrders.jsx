@@ -146,10 +146,13 @@ export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
                     success: true 
                 })
 
-                // Reload page to show new/updated orders
+                // Reload page to show new/updated orders (only on manual sync, not auto)
                 setTimeout(() => {
                     window.location.reload()
                 }, 1500)
+            } else {
+                // Auto-sync: just update local state without reload
+                console.log(`Auto-sync: ${savedCount} new, ${updatedCount} updated`);
             }
         } catch (error) {
             console.error('Sync error:', error)
