@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { StatusBar, Style } from '@capacitor/status-bar'
 import Inventory from './components/Inventory'
 import Orders from './components/Orders'
+import ShiprocketOrders from './components/ShiprocketOrders'
 import AddItem from './components/AddItem'
 import SheetImport from './components/SheetImport'
 import Dashboard from './components/Dashboard'
@@ -526,6 +527,7 @@ function InnerApp() {
         { id: 'inventory', label: 'Inventory', icon: Icons.Box },
         { id: 'vendors', label: 'Vendors', icon: Icons.Truck },
         { id: 'orders', label: 'Orders', icon: Icons.Clipboard },
+        { id: 'shiprocket', label: 'Shiprocket', icon: Icons.Truck },
         { id: 'add', label: 'Add', icon: Icons.Plus },
         { id: 'outfits', label: 'Outfits', icon: Icons.ShoppingBag },
         { id: 'customers', label: 'Customers', icon: Icons.Users },
@@ -630,6 +632,11 @@ function InnerApp() {
                 {activeTab === 'orders' && (
                     <TabBoundary label="Orders">
                         <Orders allOrders={allOrders} inventoryItems={inventoryItems} productionBatches={productionBatches} onViewOrder={(o) => setViewOrder(o)} onShowLegacyModal={() => setShowLegacyModal(true)} onCancelOrder={handleCancelOrder} onDeleteOrder={(id) => { console.log('onDeleteOrder called with id:', id); setDeleteOrderTargetId(id); }} onOpenShipping={(id) => setShippingOrderId(id)} onCreateProductionBatch={() => setShowProductionModal(true)} onReceiveBatch={(batch) => setReceiveBatch(batch)} onCancelBatch={handleCancelBatch} userProfile={userProfile} onDataChanged={refreshAllData} />
+                    </TabBoundary>
+                )}
+                {activeTab === 'shiprocket' && (
+                    <TabBoundary label="Shiprocket Orders">
+                        <ShiprocketOrders allOrders={allOrders} onViewOrder={(o) => setViewOrder(o)} />
                     </TabBoundary>
                 )}
                 {activeTab === 'outfits' && (
