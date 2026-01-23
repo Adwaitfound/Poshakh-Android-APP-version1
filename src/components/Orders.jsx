@@ -27,6 +27,7 @@ export default function Orders({
     const [scanInput, setScanInput] = useState('')
     const [scanStatus, setScanStatus] = useState(null) // 'found', 'notfound', null
     const [orderFilterStatus, setOrderFilterStatus] = useState('active')
+    const [platformFilter, setPlatformFilter] = useState('all') // 'all', 'shiprocket', 'shopify', 'shopdeck'
     const [orderSort, setOrderSort] = useState('date_desc')
     const [fromDate, setFromDate] = useState('')
     const [toDate, setToDate] = useState('')
@@ -192,11 +193,7 @@ export default function Orders({
                 }
             })
 
-            notify({
-                type: 'success',
-                title: '✅ Shiprocket Sync Complete',
-                message: `Synced ${result.synced} orders. ${result.failed > 0 ? `${result.failed} failed.` : ''}`
-            })
+            notify.success(`✅ Shiprocket Sync Complete! Synced ${result.synced} orders${result.failed > 0 ? ` (${result.failed} failed)` : ''}`)
 
             setSyncStatus(null)
 
@@ -210,11 +207,7 @@ export default function Orders({
                 status: `❌ Sync failed: ${error.message}`,
                 error: true
             })
-            notify({
-                type: 'error',
-                title: '❌ Sync Failed',
-                message: error.message
-            })
+            notify.error(`❌ Sync Failed: ${error.message}`)
         } finally {
             setIsSyncingShiprocket(false)
         }
@@ -343,6 +336,15 @@ export default function Orders({
             })
         }
 
+        // Platform filter
+        if (platformFilter === 'shiprocket') {
+            list = list.filter(o => o.platform === 'Shiprocket' || o.source === 'shiprocket')
+        } else if (platformFilter === 'shopify') {
+            list = list.filter(o => !o.platform || o.platform === 'Shopify')
+        } else if (platformFilter === 'shopdeck') {
+            list = list.filter(o => o.platform === 'Shopdeck' || o.platform === 'Shopodeck')
+        }
+
         // Date range filter
         if (fromDate || toDate) {
             const from = fromDate ? new Date(fromDate + 'T00:00:00') : null
@@ -366,7 +368,7 @@ export default function Orders({
             return 0
         })
         return list
-    }, [allOrders, orderFilterStatus, orderSort, fromDate, toDate])
+    }, [allOrders, orderFilterStatus, platformFilter, orderSort, fromDate, toDate])
 
     const handleExportCSV = () => {
         const rows = filteredOrders.map(o => ({
@@ -793,6 +795,66 @@ export default function Orders({
                             )}
                         </form>
 
+                        {/* Shiprocket Order Lookup Section */}
+                        <div className="mb-4 bg-gradient-to-r from-orange-900/30 to-amber-900/30 border-2 border-orange-500/50 p-4 rounded-2xl">
+                            <div className="flex items-center gap-2 mb-3">
+                                <span className="text-2xl">🚚</span>
+                                <div>
+                                    <h4 className="text-sm font-bold text-orange-200">Import from Shiprocket</h4>
+                                    <p className="text-xs text-orange-300/80">Enter AWB or order number to auto-fill</p>
+                                </div>
+                            </div>
+                            <form onSubmit={async (e) => {
+                                e.preventDefault()
+                                const awbInput = e.target.awb.value.trim()
+                                if (!awbInput) return
+
+                                setIsUploading(true)
+                                try {
+                                    const resp = await fetch(`http://localhost:3001/api/shiprocket/order?awb=${awbInput}`)
+                                    if (resp.ok) {
+                                        const data = await resp.json()
+                                        
+                                        // Prefill form with Shiprocket data
+                                        setStockOrderForm(prev => ({
+                                            ...prev,
+                                            orderNumber: data.orderNumber || data.awb || prev.orderNumber,
+                                            customerName: data.customerName || prev.customerName,
+                                            phone: data.phone || prev.phone,
+                                            address: `${data.address?.line1 || ''} ${data.address?.line2 || ''} ${data.address?.city || ''} ${data.address?.state || ''} ${data.address?.zip || ''}`.trim() || prev.address,
+                                            platform: 'Shiprocket'
+                                        }))
+                                        
+                                        notify.success(`✅ Shiprocket order loaded! AWB: ${data.awb}`)
+                                        e.target.awb.value = ''
+                                    } else {
+                                        notify.error('❌ Order not found in Shiprocket')
+                                    }
+                                } catch (error) {
+                                    console.error('Shiprocket lookup error:', error)
+                                    notify.error('❌ Failed to connect to Shiprocket')
+                                } finally {
+                                    setIsUploading(false)
+                                }
+                            }} className="flex gap-2">
+                                <input
+                                    name="awb"
+                                    type="text"
+                                    placeholder="Enter Shiprocket AWB or Order ID..."
+                                    className="flex-1 px-4 py-2 rounded-xl bg-white text-emerald-pine border-2 border-orange-400 font-semibold focus:outline-none focus:ring-2 focus:ring-orange-400"
+                                    disabled={isUploading}
+                                />
+                                <button
+                                    type="submit"
+                                    disabled={isUploading}
+                                    className="px-4 py-2 bg-orange-500 text-white rounded-xl font-bold hover:bg-orange-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    {isUploading ? '...' : 'Import'}
+                                </button>
+                            </form>
+                            <p className="text-xs text-orange-200/70 mt-2">💡 This will fetch customer details, phone, and address from Shiprocket</p>
+                        </div>
+
                         {/* Main Order Form */}
                         <form onSubmit={handleStockOrderSubmit} className="space-y-3">
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -816,6 +878,7 @@ export default function Orders({
                                 >
                                     <option value="Shopify">Shopify</option>
                                     <option value="Shopdeck">Shopdeck</option>
+                                    <option value="Shiprocket">Shiprocket</option>
                                 </select>
                             </div>
                             <div>
@@ -1028,6 +1091,12 @@ export default function Orders({
                             <option value="completed">Completed/Cancelled</option>
                             <option value="cod_overdue">COD Overdue</option>
                         </select>
+                        <select className="text-xs bg-white border-2 border-lime-glow rounded-xl px-3 py-2 text-emerald-pine font-semibold shadow-md hover:shadow-lg" value={platformFilter} onChange={e => setPlatformFilter(e.target.value)}>
+                            <option value="all">All Platforms</option>
+                            <option value="shiprocket">Shiprocket Only</option>
+                            <option value="shopify">Shopify Only</option>
+                            <option value="shopdeck">Shopdeck Only</option>
+                        </select>
                         <input type="date" className="text-xs bg-white border-2 border-lime-glow rounded-xl px-3 py-2 text-emerald-pine font-semibold shadow-md" value={fromDate} onChange={e => setFromDate(e.target.value)} />
                         <span className="text-xs text-white/70">to</span>
                         <input type="date" className="text-xs bg-white border-2 border-lime-glow rounded-xl px-3 py-2 text-emerald-pine font-semibold shadow-md" value={toDate} onChange={e => setToDate(e.target.value)} />
@@ -1120,23 +1189,31 @@ export default function Orders({
                                     <div className="flex items-center gap-1 md:gap-2 flex-wrap mb-0.5 md:mb-1">
                                         <span className="font-mono text-lime-glow font-bold text-xs md:text-sm">#{order.orderNumber}</span>
                                         {(() => {
-                                            // Normalize platform: Shopodeck -> Shopdeck, everything else (including empty) -> Shopify
-                                            const normalizedPlatform = (order.platform === 'Shopodeck' || order.platform === 'Shopdeck') ? 'Shopdeck' : 'Shopify'
-                                            return (
-                                                <span className={`text-[8px] md:text-[10px] font-bold px-1.5 md:px-2 py-0.5 rounded border whitespace-nowrap ${
-                                                    normalizedPlatform === 'Shopify' 
-                                                        ? 'bg-green-600/80 text-white border-green-500' 
-                                                        : 'bg-blue-600/80 text-white border-blue-500'
-                                                }`}>
-                                                    {normalizedPlatform === 'Shopify' ? '🛍️ SHOPIFY' : '🏪 SHOPDECK'}
-                                                </span>
-                                            )
+                                            // Handle all platform types
+                                            const platform = order.platform || 'Shopify'
+                                            const isShiprocket = platform === 'Shiprocket' || order.source === 'shiprocket'
+                                            const isShopdeck = platform === 'Shopodeck' || platform === 'Shopdeck'
+                                            
+                                            if (isShiprocket) {
+                                                return (
+                                                    <span className="text-[8px] md:text-[10px] font-bold px-1.5 md:px-2 py-0.5 rounded border whitespace-nowrap bg-orange-600/80 text-white border-orange-500">
+                                                        🚚 SHIPROCKET
+                                                    </span>
+                                                )
+                                            } else if (isShopdeck) {
+                                                return (
+                                                    <span className="text-[8px] md:text-[10px] font-bold px-1.5 md:px-2 py-0.5 rounded border whitespace-nowrap bg-blue-600/80 text-white border-blue-500">
+                                                        🏪 SHOPDECK
+                                                    </span>
+                                                )
+                                            } else {
+                                                return (
+                                                    <span className="text-[8px] md:text-[10px] font-bold px-1.5 md:px-2 py-0.5 rounded border whitespace-nowrap bg-green-600/80 text-white border-green-500">
+                                                        🛍️ SHOPIFY
+                                                    </span>
+                                                )
+                                            }
                                         })()}
-                                        {order.source && (order.source.includes('Shopify') || order.source.includes('Shiprocket')) && (
-                                            <span className="text-[8px] md:text-[10px] font-bold px-1.5 md:px-2 py-0.5 rounded bg-purple-600/80 text-white border border-purple-500 whitespace-nowrap">
-                                                {order.source.includes('Shopify') ? '🛍️ SHOPIFY' : '📦 SHIPROCKET'}
-                                            </span>
-                                        )}
                                     </div>
                                     {/* Status badge */}
                                     <div className="mb-0.5 md:mb-1">
