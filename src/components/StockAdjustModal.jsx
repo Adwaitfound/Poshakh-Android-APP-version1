@@ -12,7 +12,7 @@ export default function StockAdjustModal({ item, type, onClose, userProfile, onD
 
     if (!item) return null
 
-    const sizes = item.type === 'outfit' ? ['S', 'M', 'L', 'XL', 'XXL'] : null
+    const sizes = item.type === 'outfit' ? ['XS', 'S', 'M', 'L', 'XL', 'XXL'] : null
 
     const handleSubmit = async (e) => {
         e.preventDefault()
@@ -85,7 +85,7 @@ export default function StockAdjustModal({ item, type, onClose, userProfile, onD
                 <h3 className="text-lg font-bold mb-4 text-center">{type === 'ADD' ? 'Add Stock' : 'Deduct Stock'}</h3>
                 {item.type === 'outfit' && (
                     <div className="flex justify-center gap-2 mb-4">
-                        {['S', 'M', 'L', 'XL', 'XXL'].map(s => (
+                        {['XS', 'S', 'M', 'L', 'XL', 'XXL'].map(s => (
                             <button
                                 key={s}
                                 onClick={() => setSize(s)}

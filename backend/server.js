@@ -394,6 +394,97 @@ app.get('/api/shiprocket/order', async (req, res) => {
   }
 });
 
+// Shiprocket: Fetch all orders
+app.get('/api/shiprocket/orders', async (req, res) => {
+  const { page = 1, per_page = 100, status_filter = '' } = req.query;
+
+  // Auto-authenticate if no token
+  if (!SHIPROCKET_TOKEN && SHIPROCKET_EMAIL && SHIPROCKET_PASSWORD) {
+    try {
+      const authResp = await fetch('https://apiv2.shiprocket.in/v1/external/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: SHIPROCKET_EMAIL, password: SHIPROCKET_PASSWORD }),
+      });
+      if (authResp.ok) {
+        const authData = await authResp.json();
+        SHIPROCKET_TOKEN = authData.token;
+      }
+    } catch (e) {
+      console.error('Auto-auth failed:', e);
+    }
+  }
+
+  if (!SHIPROCKET_TOKEN) {
+    return res.status(500).json({ error: 'Shiprocket token not configured. Call POST /api/shiprocket/auth or set SHIPROCKET_TOKEN in .env' });
+  }
+
+  try {
+    // Fetch shipments from Shiprocket
+    const url = new URL('https://apiv2.shiprocket.in/v1/external/shipments');
+    url.searchParams.set('page', page);
+    url.searchParams.set('per_page', per_page);
+    if (status_filter) {
+      url.searchParams.set('status', status_filter);
+    }
+
+    const shipmentsResp = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${SHIPROCKET_TOKEN}`,
+      },
+    });
+
+    if (!shipmentsResp.ok) {
+      const errorText = await shipmentsResp.text();
+      return res.status(shipmentsResp.status).json({ error: 'Shiprocket API error', details: errorText });
+    }
+
+    const shipmentsData = await shipmentsResp.json();
+    const shipments = shipmentsData.data || shipmentsData.shipments || [];
+
+    // Transform each shipment into order format
+    const transformed = shipments.map(s => ({
+      orderNumber: s.order_id || s.channel_order_id || s.order_reference || `SHP-${s.shipment_id}`,
+      shiprocketOrderId: s.order_id,
+      shipmentId: s.shipment_id,
+      awb: s.awb_code || '',
+      trackingNumber: s.awb_code || '',
+      orderDate: s.order_date || s.created_date || new Date().toISOString(),
+      customerName: s.consignee_name || s.customer_name || '',
+      phone: s.consignee_phone || s.phone || '',
+      email: s.consignee_email || s.email || '',
+      address: {
+        line1: s.consignee_address || s.address || '',
+        line2: s.consignee_address_2 || '',
+        city: s.destination_city || s.city || '',
+        state: s.destination_state || s.state || '',
+        country: s.destination_country || 'IN',
+        zip: s.consignee_pincode || s.zip || '',
+      },
+      platform: s.channel_name || 'Shiprocket',
+      weight: s.weight,
+      status: s.current_status || s.status || 'pending',
+      courier: s.courier_name || s.courier || '',
+      items: s.order_items || [],
+    }));
+
+    res.json({
+      success: true,
+      orders: transformed,
+      pagination: {
+        page: parseInt(page),
+        per_page: parseInt(per_page),
+        total: shipmentsData.total || shipments.length,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching Shiprocket orders:', error);
+    res.status(500).json({ error: 'Failed to fetch orders from Shiprocket', details: error.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`✅ Poshakh backend running on http://localhost:${PORT}`);
   console.log(`📦 Shopify store: ${SHOPIFY_STORE_DOMAIN}`);

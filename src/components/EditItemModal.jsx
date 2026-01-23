@@ -151,8 +151,8 @@ export default function EditItemModal({ item, inventoryItems, db, onClose, onDat
 
                             <div className="pt-3 border-t border-purple-200">
                                 <p className="text-xs font-bold text-purple-800 uppercase mb-2">Stock Breakdown</p>
-                                <div className="grid grid-cols-5 gap-2">
-                                    {['S', 'M', 'L', 'XL', 'XXL'].map(size => (
+                                <div className="grid grid-cols-6 gap-2">
+                                    {['XS', 'S', 'M', 'L', 'XL', 'XXL'].map(size => (
                                         <div key={size}>
                                             <label className="block text-[10px] font-bold text-gray-400 dark:text-gray-500 mb-1 text-center">{size}</label>
                                             <input

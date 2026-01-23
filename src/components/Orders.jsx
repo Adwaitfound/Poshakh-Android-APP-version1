@@ -1,11 +1,12 @@
 import React, { useState, useMemo } from 'react'
 import Papa from 'papaparse'
-import { Scissors, Clipboard, X, Trash2, Truck, Package, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react'
+import { Scissors, Clipboard, X, Trash2, Truck, Package, AlertCircle, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react'
 import { getDb } from '../firebase'
 import { collection, addDoc, serverTimestamp, updateDoc, doc, increment } from 'firebase/firestore'
 import { FABRICS_COLLECTION, ORDERS_COLLECTION, parsePrice, formatCurrency } from '../lib/utils'
 import { useNotification } from '../context/NotificationProvider'
 import { logOrderCreated, logOrderStatusChanged, logStockAdjusted } from '../lib/notificationLogger'
+import { pullShiprocketOrders } from '../lib/shiprocketSync'
 
 export default function Orders({
     allOrders = [],
@@ -30,6 +31,8 @@ export default function Orders({
     const [fromDate, setFromDate] = useState('')
     const [toDate, setToDate] = useState('')
     const [isUploading, setIsUploading] = useState(false)
+    const [isSyncingShiprocket, setIsSyncingShiprocket] = useState(false)
+    const [syncStatus, setSyncStatus] = useState(null)
     const [expandedSections, setExpandedSections] = useState({ batches: true, stock: false })
     const [selectedOrders, setSelectedOrders] = useState(new Set())
     const [deleteConfirm, setDeleteConfirm] = useState(null)
@@ -172,6 +175,48 @@ export default function Orders({
         } catch (error) {
             console.error('Scan error:', error)
             setScanStatus('notfound')
+        }
+    }
+
+    // Sync orders from Shiprocket
+    const handleSyncShiprocket = async () => {
+        setIsSyncingShiprocket(true)
+        setSyncStatus({ status: 'Connecting to Shiprocket...', progress: 0 })
+
+        try {
+            const result = await pullShiprocketOrders({
+                page: 1,
+                per_page: 100,
+                onProgress: (update) => {
+                    setSyncStatus(prev => ({ ...prev, ...update }))
+                }
+            })
+
+            notify({
+                type: 'success',
+                title: '✅ Shiprocket Sync Complete',
+                message: `Synced ${result.synced} orders. ${result.failed > 0 ? `${result.failed} failed.` : ''}`
+            })
+
+            setSyncStatus(null)
+
+            // Refresh orders
+            if (onDataChanged) {
+                await onDataChanged()
+            }
+        } catch (error) {
+            console.error('Sync error:', error)
+            setSyncStatus({
+                status: `❌ Sync failed: ${error.message}`,
+                error: true
+            })
+            notify({
+                type: 'error',
+                title: '❌ Sync Failed',
+                message: error.message
+            })
+        } finally {
+            setIsSyncingShiprocket(false)
         }
     }
 
@@ -559,6 +604,35 @@ export default function Orders({
         return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
     }
 
+    // Auto-generate next Shopdeck order number
+    const getNextShopdeckNumber = () => {
+        const shopdeckOrders = allOrders.filter(o => 
+            (o.platform === 'Shopdeck' || o.orderNumber?.startsWith('shpdck')) &&
+            o.orderNumber
+        )
+        
+        if (shopdeckOrders.length === 0) return 'shpdck1'
+        
+        const numbers = shopdeckOrders
+            .map(o => {
+                const match = o.orderNumber.toString().match(/shpdck(\d+)/i)
+                return match ? parseInt(match[1]) : 0
+            })
+            .filter(n => !Number.isNaN(n))
+        
+        const maxNum = Math.max(...numbers, 0)
+        return `shpdck${maxNum + 1}`
+    }
+
+    // Handle platform change - auto-set order number for Shopdeck
+    const handlePlatformChange = (platform) => {
+        setStockOrderForm(prev => ({
+            ...prev,
+            platform,
+            orderNumber: platform === 'Shopdeck' ? getNextShopdeckNumber() : prev.orderNumber
+        }))
+    }
+
     return (
         <div className="space-y-6 fade-in">{/* Production Batches Section */}
             {onCreateProductionBatch && (
@@ -737,7 +811,7 @@ export default function Orders({
                                 <select
                                     className="w-full px-4 py-3 rounded-xl mt-1 bg-emerald-900/70 text-lime-50 text-sm border border-lime-400/60 font-semibold focus:outline-none focus:border-lime-200"
                                     value={stockOrderForm.platform}
-                                    onChange={e => setStockOrderForm({ ...stockOrderForm, platform: e.target.value })}
+                                    onChange={e => handlePlatformChange(e.target.value)}
                                     required
                                 >
                                     <option value="Shopify">Shopify</option>
@@ -961,8 +1035,29 @@ export default function Orders({
                             <button onClick={() => { setFromDate(''); setToDate('') }} className="text-xs px-3 py-2 rounded-xl bg-white text-emerald-pine font-semibold border-2 border-lime-glow/60">Clear</button>
                         )}
                         <button onClick={handleExportCSV} className="text-xs px-3 py-2 rounded-xl bg-lime-glow text-emerald-pine font-bold border-2 border-lime-glow hover:shadow-lg">Export CSV</button>
+                        <button 
+                            onClick={handleSyncShiprocket} 
+                            disabled={isSyncingShiprocket}
+                            className="text-xs px-3 py-2 rounded-xl bg-orange-500 text-white font-bold border-2 border-orange-600 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition"
+                        >
+                            <RefreshCw className={`w-3 h-3 ${isSyncingShiprocket ? 'animate-spin' : ''}`} />
+                            {isSyncingShiprocket ? 'Syncing...' : 'Sync Shiprocket'}
+                        </button>
                     </div>
                 </div>
+
+                {/* Sync Status Message */}
+                {syncStatus && (
+                    <div className={`p-3 rounded-xl border mb-3 flex items-center justify-between ${syncStatus.error ? 'bg-red-900/40 border-red-600/60' : 'bg-orange-900/40 border-orange-600/60'}`}>
+                        <span className={`text-sm font-semibold ${syncStatus.error ? 'text-red-300' : 'text-orange-300'}`}>
+                            {syncStatus.status}
+                        </span>
+                        {!syncStatus.error && (
+                            <RefreshCw className="w-4 h-4 text-orange-300 animate-spin" />
+                        )}
+                    </div>
+                )}
+
                 <div className="space-y-3">
                     {filteredOrders.length > 0 && (
                         <div className="bg-emerald-pine/20 p-2 md:p-3 rounded-xl border border-lime-glow/60 flex items-center gap-2 md:gap-3 flex-wrap">
