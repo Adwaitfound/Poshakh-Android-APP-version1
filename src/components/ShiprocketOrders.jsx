@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { RefreshCw, Package, Truck, MapPin, Phone, Mail, Calendar, ChevronDown, ChevronUp, Package2, Trash2 } from 'lucide-react'
-import { collection, addDoc, serverTimestamp, query, where, getDocs, deleteDoc, doc } from 'firebase/firestore'
+import { collection, addDoc, serverTimestamp, query, where, getDocs, deleteDoc, doc, updateDoc } from 'firebase/firestore'
 import { getDb } from '../firebase'
 
 const ORDERS_COLLECTION = 'production_orders'
@@ -84,13 +84,18 @@ export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
             const orders = data.orders || []
             setLastSync(new Date())
 
-            // Save all orders to Firestore (with duplicate check)
+            // Save/update all orders in Firestore (check and update if exists)
             const db = getDb()
             let savedCount = 0
-            let skippedCount = 0
+            let updatedCount = 0
 
             for (const order of orders) {
                 try {
+                    // Filter out undefined values
+                    const cleanOrder = Object.fromEntries(
+                        Object.entries(order).filter(([_, value]) => value !== undefined)
+                    )
+
                     // Check if order already exists by shiprocketOrderId
                     const existingQuery = query(
                         collection(db, ORDERS_COLLECTION),
@@ -98,14 +103,8 @@ export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
                     )
                     const existingDocs = await getDocs(existingQuery)
 
-                    // Only save if this order doesn't exist yet
                     if (existingDocs.empty) {
-                        // Filter out undefined values
-                        const cleanOrder = Object.fromEntries(
-                            Object.entries(order).filter(([_, value]) => value !== undefined)
-                        )
-
-                        // Add to Firestore
+                        // Create new order
                         await addDoc(collection(db, ORDERS_COLLECTION), {
                             ...cleanOrder,
                             source: 'shiprocket',
@@ -116,20 +115,32 @@ export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
                         })
                         savedCount++
                     } else {
-                        skippedCount++
+                        // Update existing order with new data (keep createdAt, update syncedAt and status)
+                        const existingDoc = existingDocs.docs[0]
+                        await updateDoc(doc(db, ORDERS_COLLECTION, existingDoc.id), {
+                            ...cleanOrder,
+                            source: 'shiprocket',
+                            platform: 'Shiprocket',
+                            syncedAt: serverTimestamp()
+                            // Note: createdAt is NOT updated, preserving original creation time
+                        })
+                        updatedCount++
                     }
                 } catch (err) {
-                    console.error(`Failed to save order ${order.orderNumber}:`, err)
+                    console.error(`Failed to sync order ${order.orderNumber}:`, err)
                 }
             }
 
             if (!silent) {
+                const message = updatedCount > 0 
+                    ? `✅ Synced ${savedCount} new, updated ${updatedCount} existing orders`
+                    : `✅ Synced ${savedCount} new orders`
                 setSyncStatus({ 
-                    status: `✅ Synced ${savedCount} new orders (${skippedCount} already exist)`, 
+                    status: message, 
                     success: true 
                 })
 
-                // Reload page to show new orders
+                // Reload page to show new/updated orders
                 setTimeout(() => {
                     window.location.reload()
                 }, 1500)
