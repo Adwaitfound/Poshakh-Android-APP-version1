@@ -499,7 +499,75 @@ app.get('/api/shiprocket/orders', async (req, res) => {
   }
 });
 
+// Shiprocket: Webhook endpoint to receive real-time order updates
+app.post('/api/shiprocket/webhook', express.json(), async (req, res) => {
+  try {
+    console.log('📥 Shiprocket webhook received:', JSON.stringify(req.body, null, 2));
+    
+    const payload = req.body;
+    
+    // Shiprocket sends different event types
+    // Common events: order_created, order_shipped, order_delivered, order_cancelled
+    
+    if (!payload) {
+      return res.status(400).json({ error: 'No payload received' });
+    }
+
+    // Transform webhook data to our order format
+    const orderData = payload.order || payload;
+    
+    const transformedOrder = {
+      orderNumber: orderData.channel_order_id || orderData.order_id || orderData.id,
+      shiprocketOrderId: orderData.id || orderData.order_id,
+      shipmentId: orderData.shipment_id,
+      awb: orderData.awb_code || orderData.awb || '',
+      trackingNumber: orderData.awb_code || orderData.awb || '',
+      orderDate: orderData.order_date || orderData.created_at || new Date().toISOString(),
+      // Webhook should have unmasked customer data
+      customerName: orderData.customer_name || orderData.billing_customer_name || '',
+      phone: orderData.customer_phone || orderData.billing_phone || orderData.phone || '',
+      email: orderData.customer_email || orderData.billing_email || orderData.email || '',
+      address: {
+        line1: orderData.customer_address || orderData.billing_address || '',
+        line2: orderData.customer_address_2 || orderData.billing_address_2 || '',
+        city: orderData.customer_city || orderData.billing_city || '',
+        state: orderData.customer_state || orderData.billing_state || '',
+        country: orderData.customer_country || 'IN',
+        zip: orderData.customer_pincode || orderData.billing_pincode || '',
+      },
+      platform: orderData.channel_name || 'Shiprocket',
+      weight: orderData.weight || orderData.total_weight,
+      status: orderData.status || orderData.order_status || 'pending',
+      courier: orderData.courier_name || orderData.courier || '',
+      items: orderData.products || orderData.order_items || [],
+      // Webhook metadata
+      webhookEvent: payload.event_type || 'order_update',
+      webhookReceivedAt: new Date().toISOString(),
+    };
+
+    console.log('✅ Transformed webhook order:', {
+      orderNumber: transformedOrder.orderNumber,
+      customerName: transformedOrder.customerName,
+      phone: transformedOrder.phone,
+      email: transformedOrder.email,
+      status: transformedOrder.status,
+    });
+
+    // Send success response to Shiprocket
+    res.json({ 
+      success: true, 
+      message: 'Webhook received and processed',
+      orderNumber: transformedOrder.orderNumber 
+    });
+
+  } catch (error) {
+    console.error('❌ Webhook processing error:', error);
+    res.status(500).json({ error: 'Webhook processing failed', details: error.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`✅ Poshakh backend running on http://localhost:${PORT}`);
   console.log(`📦 Shopify store: ${SHOPIFY_STORE_DOMAIN}`);
+  console.log(`🔗 Shiprocket webhook URL: http://localhost:${PORT}/api/shiprocket/webhook`);
 });
