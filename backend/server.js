@@ -420,8 +420,8 @@ app.get('/api/shiprocket/orders', async (req, res) => {
   }
 
   try {
-    // Fetch shipments from Shiprocket
-    const url = new URL('https://apiv2.shiprocket.in/v1/external/shipments');
+    // Use orders endpoint instead of shipments for complete customer data
+    const url = new URL('https://apiv2.shiprocket.in/v1/external/orders');
     url.searchParams.set('page', page);
     url.searchParams.set('per_page', per_page);
     if (status_filter) {
@@ -444,7 +444,20 @@ app.get('/api/shiprocket/orders', async (req, res) => {
     const shipmentsData = await shipmentsResp.json();
     const shipments = shipmentsData.data || shipmentsData.shipments || [];
 
-    // Transform each shipment into order format
+    // Debug: Log extracted customer data
+    if (shipments.length > 0) {
+      const first = shipments[0];
+      console.log('✅ Customer data extracted:', {
+        customerName: first.customer_name,
+        phone: first.customer_phone,
+        email: first.customer_email,
+        city: first.customer_city,
+        state: first.customer_state,
+        items: (first.products || []).length,
+      });
+    }
+
+    // Transform each order into our format
     const transformed = shipments.map(s => ({
       orderNumber: s.order_id || s.channel_order_id || s.order_reference || `SHP-${s.shipment_id}`,
       shiprocketOrderId: s.order_id,
@@ -452,22 +465,24 @@ app.get('/api/shiprocket/orders', async (req, res) => {
       awb: s.awb_code || '',
       trackingNumber: s.awb_code || '',
       orderDate: s.order_date || s.created_date || new Date().toISOString(),
-      customerName: s.consignee_name || s.customer_name || '',
-      phone: s.consignee_phone || s.phone || '',
-      email: s.consignee_email || s.email || '',
+      // Try multiple field names for customer data
+      customerName: s.consignee_name || s.customer_name || s.shipping_customer_name || s.buyer_name || '',
+      phone: s.consignee_phone || s.customer_phone || s.phone || s.shipping_phone || s.billing_phone || s.customer_alternate_phone || '',
+      email: s.consignee_email || s.customer_email || s.email || s.shipping_email || s.billing_email || '',
       address: {
-        line1: s.consignee_address || s.address || '',
-        line2: s.consignee_address_2 || '',
-        city: s.destination_city || s.city || '',
-        state: s.destination_state || s.state || '',
-        country: s.destination_country || 'IN',
-        zip: s.consignee_pincode || s.zip || '',
+        line1: s.consignee_address || s.customer_address || s.address || s.shipping_address || s.buyer_address || '',
+        line2: s.consignee_address_2 || s.customer_address_2 || s.address_2 || s.shipping_address_2 || '',
+        city: s.destination_city || s.customer_city || s.city || s.shipping_city || s.billing_city || '',
+        state: s.destination_state || s.customer_state || s.state || s.shipping_state || s.billing_state || '',
+        country: s.destination_country || s.customer_country || s.country || s.billing_country || 'IN',
+        zip: s.consignee_pincode || s.customer_pincode || s.zip || s.shipping_pincode || s.billing_pincode || '',
       },
       platform: s.channel_name || 'Shiprocket',
       weight: s.weight,
       status: s.current_status || s.status || 'pending',
       courier: s.courier_name || s.courier || '',
-      items: s.order_items || [],
+      // Use products or order_items
+      items: s.products || s.order_items || [],
     }));
 
     res.json({
