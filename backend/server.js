@@ -396,7 +396,7 @@ app.get('/api/shiprocket/order', async (req, res) => {
 
 // Shiprocket: Fetch all orders
 app.get('/api/shiprocket/orders', async (req, res) => {
-  const { page = 1, per_page = 100, status_filter = '' } = req.query;
+  const { page = 1, per_page = 100, status_filter = '', from_date = '', to_date = '', created_after = '', created_before = '' } = req.query;
 
   // Auto-authenticate if no token
   if (!SHIPROCKET_TOKEN && SHIPROCKET_EMAIL && SHIPROCKET_PASSWORD) {
@@ -427,6 +427,21 @@ app.get('/api/shiprocket/orders', async (req, res) => {
     if (status_filter) {
       url.searchParams.set('status', status_filter);
     }
+    // Add date filters if provided - try multiple parameter names Shiprocket might support
+    if (from_date) {
+      url.searchParams.set('from_date', from_date);
+      url.searchParams.set('order_date_start', from_date);
+    }
+    if (to_date) {
+      url.searchParams.set('to_date', to_date);
+      url.searchParams.set('order_date_end', to_date);
+    }
+    if (created_after) {
+      url.searchParams.set('created_after', created_after);
+    }
+    if (created_before) {
+      url.searchParams.set('created_before', created_before);
+    }
 
     const shipmentsResp = await fetch(url.toString(), {
       method: 'GET',
@@ -436,6 +451,8 @@ app.get('/api/shiprocket/orders', async (req, res) => {
       },
     });
 
+    console.log('🔗 Shiprocket URL:', url.toString());
+
     if (!shipmentsResp.ok) {
       const errorText = await shipmentsResp.text();
       return res.status(shipmentsResp.status).json({ error: 'Shiprocket API error', details: errorText });
@@ -444,16 +461,18 @@ app.get('/api/shiprocket/orders', async (req, res) => {
     const shipmentsData = await shipmentsResp.json();
     const shipments = shipmentsData.data || shipmentsData.shipments || [];
 
+    console.log(`📦 Shiprocket API returned ${shipments.length} orders (page ${page})`, { total: shipmentsData.total, shipments_count: shipmentsData.shipments_count });
+
     // Debug: Log extracted customer data
     if (shipments.length > 0) {
       const first = shipments[0];
-      console.log('✅ Available ID fields:', {
-        id: first.id,
-        order_id: first.order_id,
-        channel_order_id: first.channel_order_id,
-        channel_id: first.channel_id,
-        customerName: first.customer_name,
-      });
+      console.log('✅ All order keys:', Object.keys(first).slice(0, 30).join(', '));
+      
+      // Log product fields to debug selling_price
+      if (first.products && first.products.length > 0) {
+        console.log('✅ First product fields:', Object.keys(first.products[0]));
+        console.log('✅ First product data:', JSON.stringify(first.products[0], null, 2).substring(0, 500));
+      }
     }
 
     // Transform each order into our format
@@ -480,8 +499,16 @@ app.get('/api/shiprocket/orders', async (req, res) => {
       weight: s.weight,
       status: s.current_status || s.status || 'pending',
       courier: s.courier_name || s.courier || '',
-      // Use products or order_items
-      items: s.products || s.order_items || [],
+      // Pricing fields
+      sellingPrice: s.payment || s.total || s.sub_total || 0,
+      discount: s.discount || 0,
+      // Transform products - calculate selling_price if missing
+      items: (s.products || s.order_items || []).map(p => ({
+        ...p,
+        // Calculate selling_price if not provided or is 0
+        selling_price: p.selling_price > 0 ? p.selling_price : ((parseFloat(p.price) || 0) - (parseFloat(p.discount) || 0)),
+        product_cost: p.product_cost || p.price || 0,
+      })),
     }));
 
     res.json({
@@ -491,6 +518,114 @@ app.get('/api/shiprocket/orders', async (req, res) => {
         page: parseInt(page),
         per_page: parseInt(per_page),
         total: shipmentsData.total || shipments.length,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching Shiprocket orders:', error);
+    res.status(500).json({ error: 'Failed to fetch orders from Shiprocket', details: error.message });
+  }
+});
+
+// Shiprocket: Get orders with full details (pricing, customer info, items)
+// Use /orders endpoint which has complete order details (pricing, customer info)
+// Note: Limited to 58 orders with complete data
+app.get('/api/shiprocket/shipments', async (req, res) => {
+  const { page = 1, per_page = 100, from_date = '', to_date = '' } = req.query;
+
+  if (!SHIPROCKET_TOKEN) {
+    return res.status(500).json({ error: 'Shiprocket token not configured' });
+  }
+
+  try {
+    const url = new URL('https://apiv2.shiprocket.in/v1/external/orders');
+    url.searchParams.set('page', page);
+    url.searchParams.set('per_page', per_page);
+    if (from_date) {
+      url.searchParams.set('from_date', from_date);
+    }
+    if (to_date) {
+      url.searchParams.set('to_date', to_date);
+    }
+
+    console.log('🔗 Orders URL (complete data):', url.toString());
+
+    const shipmentsResp = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${SHIPROCKET_TOKEN}`,
+      },
+    });
+
+    if (!shipmentsResp.ok) {
+      const errorText = await shipmentsResp.text();
+      return res.status(shipmentsResp.status).json({ error: 'Shiprocket API error', details: errorText });
+    }
+
+    const shipmentsData = await shipmentsResp.json();
+    const rawOrders = shipmentsData.data || shipmentsData.orders || [];
+
+    console.log(`📦 Shiprocket Orders API returned ${rawOrders.length} orders (page ${page})`);
+    if (rawOrders.length > 0) {
+      console.log('✅ First order customer:', rawOrders[0].billing_customer_name || rawOrders[0].customer_name || 'N/A');
+      console.log('✅ First order items:', rawOrders[0].items?.length || 0);
+    }
+
+    const metaPagination = shipmentsData.meta?.pagination || {};
+    let totalCount = parseInt(metaPagination.total) || rawOrders.length;
+    
+    // For /orders endpoint, pagination total is reliable
+    console.log('📄 Total count:', totalCount);
+
+    console.log('🔍 Has next page:', !!metaPagination.links?.next);
+
+    // Transform to our format (from /orders endpoint)
+    const orders = rawOrders.map(o => ({
+      orderNumber: o.channel_order_id || `SHP-${o.id}`,
+      shiprocketOrderId: o.id,
+      awb: o.last_mile_awb || o.awb || '',
+      trackingNumber: o.last_mile_awb || o.awb || '',
+      orderDate: o.created_at || new Date().toISOString(),
+      customerName: o.billing_customer_name || o.customer_name || 'Unknown',
+      phone: o.billing_phone || o.customer_phone || o.customer_alternate_phone || '',
+      email: o.billing_email || o.customer_email || '',
+      address: {
+        line1: o.billing_address || o.customer_address || '',
+        line2: o.billing_address_2 || o.customer_address_2 || '',
+        city: o.billing_city || o.customer_city || '',
+        state: o.billing_state || o.customer_state || '',
+        country: o.billing_country || o.customer_country || 'IN',
+        zip: o.billing_pincode || o.customer_pincode || '',
+      },
+      platform: o.channel_name || 'Shiprocket',
+      status: o.master_status || o.status || 'pending',
+      courier: o.last_mile_courier_name || o.courier_name || '',
+      sellingPrice: o.total || o.total_order_value || 0,
+      discount: o.discount || 0,
+      items: (o.items || o.products || []).map(p => ({
+        id: p.id,
+        name: p.name,
+        sku: p.channel_sku || p.sku || '',
+        channel_sku: p.channel_sku || p.sku || '',
+        quantity: p.quantity || 1,
+        price: parseFloat(p.price) || 0,
+        product_cost: parseFloat(p.product_cost) || 0,
+        discount: parseFloat(p.discount) || 0,
+        selling_price: p.selling_price > 0 ? parseFloat(p.selling_price) : (parseFloat(p.price) - parseFloat(p.discount)) || 0,
+        mrp: parseFloat(p.mrp) || 0,
+        hsn: p.hsn || '',
+      })),
+    }));
+
+    const pagination = shipmentsData.meta?.pagination || shipmentsData.pagination || {};
+
+    res.json({
+      success: true,
+      orders: orders,
+      pagination: {
+        page: parseInt(page),
+        per_page: parseInt(per_page),
+        total: totalCount,
       },
     });
   } catch (error) {
@@ -563,6 +698,30 @@ app.post('/api/shiprocket/webhook', express.json(), async (req, res) => {
   } catch (error) {
     console.error('❌ Webhook processing error:', error);
     res.status(500).json({ error: 'Webhook processing failed', details: error.message });
+  }
+});
+
+// Delete all Shiprocket orders from Firestore
+app.post('/api/shiprocket/delete-all', async (req, res) => {
+  try {
+    const db = getDb();
+    const batch = db.batch();
+
+    // Query all Shiprocket orders
+    const q = query(collection(db, 'production_orders'), where('source', '==', 'shiprocket'));
+    const snap = await getDocs(q);
+
+    console.log(`🗑️ Deleting ${snap.docs.length} Shiprocket orders...`);
+
+    snap.docs.forEach((docSnap) => {
+      batch.delete(doc(db, 'production_orders', docSnap.id));
+    });
+
+    await batch.commit();
+    res.json({ success: true, deletedCount: snap.docs.length });
+  } catch (error) {
+    console.error('❌ Delete all Shiprocket orders error:', error);
+    res.status(500).json({ error: 'Failed to delete orders', details: error.message });
   }
 });
 

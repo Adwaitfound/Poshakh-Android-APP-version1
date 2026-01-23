@@ -7,6 +7,8 @@ import { FABRICS_COLLECTION, ORDERS_COLLECTION, parsePrice, formatCurrency } fro
 import { useNotification } from '../context/NotificationProvider'
 import { logOrderCreated, logOrderStatusChanged, logStockAdjusted } from '../lib/notificationLogger'
 import { pullShiprocketOrders } from '../lib/shiprocketSync'
+import { query, where, getDocs, deleteDoc } from 'firebase/firestore'
+import { API_BASE_URL } from '../config'
 
 export default function Orders({
     allOrders = [],
@@ -24,6 +26,7 @@ export default function Orders({
     onDataChanged
 }) {
     const [stockOrderForm, setStockOrderForm] = useState({ orderNumber: '', outfitId: '', size: 'M', quantity: '1', customerName: '', phone: '', address: '', sellingPrice: '', stitchingCost: '', fabricCost: '', productionCost: '', platform: 'Shopify' })
+    const [shiprocketProductName, setShiprocketProductName] = useState('')
     const [scanInput, setScanInput] = useState('')
     const [scanStatus, setScanStatus] = useState(null) // 'found', 'notfound', null
     const [orderFilterStatus, setOrderFilterStatus] = useState('active')
@@ -32,12 +35,39 @@ export default function Orders({
     const [fromDate, setFromDate] = useState('')
     const [toDate, setToDate] = useState('')
     const [isUploading, setIsUploading] = useState(false)
+    const [isDeletingShiprocket, setIsDeletingShiprocket] = useState(false)
     const [isSyncingShiprocket, setIsSyncingShiprocket] = useState(false)
     const [syncStatus, setSyncStatus] = useState(null)
     const [expandedSections, setExpandedSections] = useState({ batches: true, stock: false })
     const [selectedOrders, setSelectedOrders] = useState(new Set())
     const [deleteConfirm, setDeleteConfirm] = useState(null)
     const { notify } = useNotification()
+
+    // Bulk delete Shiprocket orders from Orders tab
+    const handleDeleteShiprocketOrders = async () => {
+        if (!window.confirm('Delete all Shiprocket orders? This cannot be undone.')) return
+        setIsDeletingShiprocket(true)
+        try {
+            const db = getDb()
+            // Query Shiprocket orders
+            const q = query(collection(db, ORDERS_COLLECTION), where('source', '==', 'shiprocket'))
+            const snap = await getDocs(q)
+            
+            let deleted = 0
+            for (const docSnap of snap.docs) {
+                await deleteDoc(doc(db, ORDERS_COLLECTION, docSnap.id))
+                deleted++
+            }
+            
+            notify.success(`✅ Deleted ${deleted} Shiprocket orders`)
+            setTimeout(() => window.location.reload(), 800)
+        } catch (err) {
+            console.error('Delete error:', err)
+            notify.error('Delete failed: ' + err.message)
+        } finally {
+            setIsDeletingShiprocket(false)
+        }
+    }
 
     // Multi-select helpers
     const toggleSelectOrder = (orderId) => {
@@ -142,7 +172,7 @@ export default function Orders({
             // Second try: fetch from Shiprocket by AWB (assume numeric scan is an AWB)
             if (/^\d+$/.test(searchTerm)) {
                 try {
-                    const resp = await fetch(`http://localhost:3001/api/shiprocket/order?awb=${searchTerm}`)
+                    const resp = await fetch(`${API_BASE_URL}/api/shiprocket/order?awb=${searchTerm}`)
                     if (resp.ok) {
                         const shippingData = await resp.json()
                         
@@ -563,9 +593,11 @@ export default function Orders({
             // Reset form - keep customer info if requested
             if (keepCustomerInfo) {
                 setStockOrderForm({ orderNumber: '', outfitId: '', size: 'M', quantity: '1', customerName, phone, address, sellingPrice: '', stitchingCost: '', fabricCost: '', productionCost: '', platform })
+                setShiprocketProductName('')
                 notify.success(`✅ Order #${orderNumber} created! ${qty}x ${outfit.name} (${size}) - Ready for next order`)
             } else {
                 setStockOrderForm({ orderNumber: '', outfitId: '', size: 'M', quantity: '1', customerName: '', phone: '', address: '', sellingPrice: '', stitchingCost: '', fabricCost: '', productionCost: '', platform: 'Shopify' })
+                setShiprocketProductName('')
                 notify.success(`✅ Order #${orderNumber} created! ${qty}x ${outfit.name} (${size})`)
             }
 
@@ -804,43 +836,60 @@ export default function Orders({
                                     <p className="text-xs text-orange-300/80">Enter AWB or order number to auto-fill</p>
                                 </div>
                             </div>
-                            <form onSubmit={async (e) => {
+                            <form onSubmit={(e) => {
                                 e.preventDefault()
-                                const awbInput = e.target.awb.value.trim()
-                                if (!awbInput) return
+                                const orderInput = e.target.shiporder.value.trim()
+                                if (!orderInput) return
 
                                 setIsUploading(true)
                                 try {
-                                    const resp = await fetch(`http://localhost:3001/api/shiprocket/order?awb=${awbInput}`)
-                                    if (resp.ok) {
-                                        const data = await resp.json()
-                                        
-                                        // Prefill form with Shiprocket data
+                                    // Search through loaded Shiprocket orders by last 4 digits or full order number
+                                    const shiprocketOrders = allOrders.filter(o => o.platform === 'Shiprocket' || o.source === 'shiprocket')
+                                    const foundOrder = shiprocketOrders.find(order => {
+                                        const lastFourDigits = (order.orderNumber || order.shiprocketOrderId || '').toString().slice(-4)
+                                        return lastFourDigits === orderInput || (order.orderNumber || '').toString().includes(orderInput) || (order.awb || '').toString().includes(orderInput)
+                                    })
+
+                                    if (foundOrder) {
+                                        // Map Shiprocket data to order form
+                                        const fullAddress = [
+                                            foundOrder.address?.line1,
+                                            foundOrder.address?.line2,
+                                            foundOrder.address?.city,
+                                            foundOrder.address?.state,
+                                            foundOrder.address?.zip
+                                        ].filter(Boolean).join(' ')
+
+                                        // Get product name from first item
+                                        const productName = foundOrder.items?.[0]?.name || foundOrder.items?.[0]?.product_name || foundOrder.items?.[0]?.channel_sku || 'Unknown Product'
+
                                         setStockOrderForm(prev => ({
                                             ...prev,
-                                            orderNumber: data.orderNumber || data.awb || prev.orderNumber,
-                                            customerName: data.customerName || prev.customerName,
-                                            phone: data.phone || prev.phone,
-                                            address: `${data.address?.line1 || ''} ${data.address?.line2 || ''} ${data.address?.city || ''} ${data.address?.state || ''} ${data.address?.zip || ''}`.trim() || prev.address,
-                                            platform: 'Shiprocket'
+                                            orderNumber: (foundOrder.orderNumber || foundOrder.shiprocketOrderId || orderInput).slice(-4),
+                                            customerName: foundOrder.customerName || prev.customerName,
+                                            phone: foundOrder.phone || prev.phone,
+                                            address: fullAddress || prev.address,
+                                            platform: 'Shiprocket',
+                                            sellingPrice: foundOrder.sellingPrice || prev.sellingPrice
                                         }))
-                                        
-                                        notify.success(`✅ Shiprocket order loaded! AWB: ${data.awb}`)
-                                        e.target.awb.value = ''
+                                        setShiprocketProductName(productName)
+
+                                        notify.success(`✅ Order loaded! #${(foundOrder.orderNumber || foundOrder.shiprocketOrderId || orderInput).slice(-4)}`)
+                                        e.target.shiporder.value = ''
                                     } else {
-                                        notify.error('❌ Order not found in Shiprocket')
+                                        notify.error('❌ Order not found in Shiprocket tab. Sync orders first.')
                                     }
                                 } catch (error) {
                                     console.error('Shiprocket lookup error:', error)
-                                    notify.error('❌ Failed to connect to Shiprocket')
+                                    notify.error('❌ Failed to find order')
                                 } finally {
                                     setIsUploading(false)
                                 }
                             }} className="flex gap-2">
                                 <input
-                                    name="awb"
+                                    name="shiporder"
                                     type="text"
-                                    placeholder="Enter Shiprocket AWB or Order ID..."
+                                    placeholder="Enter last 4 digits or full AWB..."
                                     className="flex-1 px-4 py-2 rounded-xl bg-white text-emerald-pine border-2 border-orange-400 font-semibold focus:outline-none focus:ring-2 focus:ring-orange-400"
                                     disabled={isUploading}
                                 />
@@ -896,6 +945,9 @@ export default function Orders({
                                         </option>
                                     ))}
                                 </select>
+                                {shiprocketProductName && (
+                                    <p className="text-xs text-orange-300 mt-2 font-semibold">📦 Shiprocket Product: {shiprocketProductName}</p>
+                                )}
                             </div>
                         </div>
 
@@ -1104,6 +1156,14 @@ export default function Orders({
                             <button onClick={() => { setFromDate(''); setToDate('') }} className="text-xs px-3 py-2 rounded-xl bg-white text-emerald-pine font-semibold border-2 border-lime-glow/60">Clear</button>
                         )}
                         <button onClick={handleExportCSV} className="text-xs px-3 py-2 rounded-xl bg-lime-glow text-emerald-pine font-bold border-2 border-lime-glow hover:shadow-lg">Export CSV</button>
+                        <button 
+                            onClick={handleDeleteShiprocketOrders}
+                            disabled={isDeletingShiprocket}
+                            className="text-xs px-3 py-2 rounded-xl bg-red-600 text-white font-bold border-2 border-red-700 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Delete all Shiprocket orders from Orders tab"
+                        >
+                            {isDeletingShiprocket ? 'Deleting…' : 'Delete Shiprocket Orders'}
+                        </button>
                         <button 
                             onClick={handleSyncShiprocket} 
                             disabled={isSyncingShiprocket}

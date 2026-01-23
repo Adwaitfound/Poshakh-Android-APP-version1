@@ -612,39 +612,39 @@ function InnerApp() {
                 </div>
             </header>
 
-            {/* Main Content */}
+            {/* Main Content - Keep all tabs mounted to preserve form state */}
             <main className="px-4 sm:px-6 py-4 sm:py-6 max-w-7xl mx-auto pb-24">
-                {activeTab === 'home' && (
+                <div style={{ display: activeTab === 'home' ? 'block' : 'none' }}>
                     <TabBoundary label="Home">
                         <Dashboard allOrders={allOrders} inventoryItems={inventoryItems} userRole={userProfile?.role} />
                     </TabBoundary>
-                )}
-                {activeTab === 'inventory' && (
+                </div>
+                <div style={{ display: activeTab === 'inventory' ? 'block' : 'none' }}>
                     <TabBoundary label="Inventory">
                         <Inventory onViewItem={(it) => setViewInventoryItem(it)} inventoryItems={inventoryItems} soldCounts={soldCounts} onAddClick={() => setActiveTab('add')} userRole={userProfile?.role} />
                     </TabBoundary>
-                )}
-                {activeTab === 'vendors' && (
+                </div>
+                <div style={{ display: activeTab === 'vendors' ? 'block' : 'none' }}>
                     <TabBoundary label="Vendors">
                         <Vendors vendors={vendors} inventoryItems={inventoryItems} onDataChanged={refreshAllData} userProfile={userProfile} />
                     </TabBoundary>
-                )}
-                {activeTab === 'orders' && (
+                </div>
+                <div style={{ display: activeTab === 'orders' ? 'block' : 'none' }}>
                     <TabBoundary label="Orders">
                         <Orders allOrders={allOrders} inventoryItems={inventoryItems} productionBatches={productionBatches} onViewOrder={(o) => setViewOrder(o)} onShowLegacyModal={() => setShowLegacyModal(true)} onCancelOrder={handleCancelOrder} onDeleteOrder={(id) => { console.log('onDeleteOrder called with id:', id); setDeleteOrderTargetId(id); }} onOpenShipping={(id) => setShippingOrderId(id)} onCreateProductionBatch={() => setShowProductionModal(true)} onReceiveBatch={(batch) => setReceiveBatch(batch)} onCancelBatch={handleCancelBatch} userProfile={userProfile} onDataChanged={refreshAllData} />
                     </TabBoundary>
-                )}
-                {activeTab === 'shiprocket' && (
+                </div>
+                <div style={{ display: activeTab === 'shiprocket' ? 'block' : 'none' }}>
                     <TabBoundary label="Shiprocket Orders">
-                        <ShiprocketOrders allOrders={allOrders} onViewOrder={(o) => setViewOrder(o)} />
+                        <ShiprocketOrders allOrders={allOrders} onViewOrder={(o) => setViewOrder(o)} onRefreshOrders={loadOrders} />
                     </TabBoundary>
-                )}
-                {activeTab === 'outfits' && (
+                </div>
+                <div style={{ display: activeTab === 'outfits' ? 'block' : 'none' }}>
                     <TabBoundary label="Outfits">
                         <Outfits allOrders={allOrders} inventoryItems={inventoryItems} />
                     </TabBoundary>
-                )}
-                {activeTab === 'customers' && (
+                </div>
+                <div style={{ display: activeTab === 'customers' ? 'block' : 'none' }}>
                     <TabBoundary label="Customers">
                         <Customers
                             allOrders={allOrders}
@@ -655,26 +655,28 @@ function InnerApp() {
                             onDeleteCustomer={handleDeleteCustomer}
                         />
                     </TabBoundary>
-                )}
-                {activeTab === 'financial' && (
+                </div>
+                <div style={{ display: activeTab === 'financial' ? 'block' : 'none' }}>
                     <TabBoundary label="Financial">
                         <FinancialInsights inventoryItems={inventoryItems} allOrders={allOrders} userRole={userProfile?.role} />
                     </TabBoundary>
-                )}
-                {activeTab === 'integrations' && (
+                </div>
+                <div style={{ display: activeTab === 'integrations' ? 'block' : 'none' }}>
                     <TabBoundary label="Integrations">
                         <IntegrationsSettings onImportSuccess={loadOrders} />
                     </TabBoundary>
-                )}
-                {activeTab === 'add' && (
+                </div>
+                <div style={{ display: activeTab === 'add' ? 'block' : 'none' }}>
                     <TabBoundary label="Add Item">
                         <AddItem onSuccess={() => setActiveTab('inventory')} onDataChanged={refreshAllData} userProfile={userProfile} vendors={vendors} />
                     </TabBoundary>
-                )}
-                {activeTab === 'import' && userProfile?.role === 'admin' && (
-                    <TabBoundary label="Import">
-                        <SheetImport />
-                    </TabBoundary>
+                </div>
+                {userProfile?.role === 'admin' && (
+                    <div style={{ display: activeTab === 'import' ? 'block' : 'none' }}>
+                        <TabBoundary label="Import">
+                            <SheetImport />
+                        </TabBoundary>
+                    </div>
                 )}
 
                 {/* Modals wired to state and handlers */}

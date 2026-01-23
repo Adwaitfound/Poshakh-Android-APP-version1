@@ -2,15 +2,50 @@ import React, { useState, useEffect } from 'react'
 import { RefreshCw, Package, Truck, MapPin, Phone, Mail, Calendar, ChevronDown, ChevronUp, Package2, Trash2 } from 'lucide-react'
 import { collection, addDoc, serverTimestamp, query, where, getDocs, deleteDoc, doc, updateDoc } from 'firebase/firestore'
 import { getDb } from '../firebase'
+import { API_BASE_URL } from '../config'
 
 const ORDERS_COLLECTION = 'production_orders'
 
-export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
+export default function ShiprocketOrders({ allOrders = [], onViewOrder, onRefreshOrders }) {
     const [isSyncing, setIsSyncing] = useState(false)
     const [syncStatus, setSyncStatus] = useState(null)
-    const [shiprocketOrders, setShiprocketOrders] = useState([])
+    const [shiprocketOrders, setShiprocketOrders] = useState([]) // Local state for synced orders
     const [expandedOrder, setExpandedOrder] = useState(null)
     const [lastSync, setLastSync] = useState(null)
+    const [filterFromDate, setFilterFromDate] = useState('2025-09-01')
+    const [filterToDate, setFilterToDate] = useState(new Date().toISOString().split('T')[0])
+    const [sortBy, setSortBy] = useState('newest') // 'newest' or 'oldest'
+
+    // Load existing Shiprocket orders from Firestore on mount
+    useEffect(() => {
+        const loadOrders = async () => {
+            try {
+                const db = getDb()
+                const queries = [
+                    query(collection(db, ORDERS_COLLECTION), where('source', '==', 'shiprocket')),
+                    query(collection(db, ORDERS_COLLECTION), where('platform', '==', 'Shiprocket')),
+                ]
+
+                const allDocs = []
+                for (const q of queries) {
+                    const snapshot = await getDocs(q)
+                    snapshot.docs.forEach(docSnap => {
+                        const data = docSnap.data()
+                        if (!allDocs.find(d => d.shiprocketOrderId === data.shiprocketOrderId)) {
+                            allDocs.push({ id: docSnap.id, ...data })
+                        }
+                    })
+                }
+
+                setShiprocketOrders(allDocs)
+                console.log(`✅ Loaded ${allDocs.length} Shiprocket orders from Firestore`)
+            } catch (error) {
+                console.error('Error loading Shiprocket orders:', error)
+            }
+        }
+
+        loadOrders()
+    }, [])
 
     // Auto-sync every 30 seconds
     useEffect(() => {
@@ -20,14 +55,6 @@ export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
 
         return () => clearInterval(syncInterval)
     }, [])
-
-    // Filter Shiprocket orders from all orders
-    useEffect(() => {
-        const filtered = allOrders.filter(order => 
-            order.platform === 'Shiprocket' || order.source === 'shiprocket'
-        )
-        setShiprocketOrders(filtered)
-    }, [allOrders])
 
     const handleClearAll = async () => {
         if (!window.confirm('Delete all Shiprocket orders? This cannot be undone.')) {
@@ -39,16 +66,21 @@ export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
 
         try {
             const db = getDb()
-            const q = query(
-                collection(db, ORDERS_COLLECTION),
-                where('source', '==', 'shiprocket')
-            )
-            const docs = await getDocs(q)
-            
+
+            // Firestore doesn't support OR in a single query; fetch both variants.
+            const queries = [
+                query(collection(db, ORDERS_COLLECTION), where('source', '==', 'shiprocket')),
+                query(collection(db, ORDERS_COLLECTION), where('platform', '==', 'Shiprocket')),
+            ]
+
             let deletedCount = 0
-            for (const docSnap of docs.docs) {
-                await deleteDoc(doc(db, ORDERS_COLLECTION, docSnap.id))
-                deletedCount++
+
+            for (const q of queries) {
+                const docs = await getDocs(q)
+                for (const docSnap of docs.docs) {
+                    await deleteDoc(doc(db, ORDERS_COLLECTION, docSnap.id))
+                    deletedCount++
+                }
             }
 
             setSyncStatus({ 
@@ -75,84 +107,111 @@ export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
         if (!silent) setSyncStatus({ status: 'Connecting to Shiprocket...', progress: 0 })
 
         try {
-            const resp = await fetch('http://localhost:3001/api/shiprocket/orders?page=1&per_page=100')
-            if (!resp.ok) {
-                throw new Error('Failed to fetch Shiprocket orders')
+            // First, authenticate with Shiprocket to get token
+            const authResp = await fetch(`${API_BASE_URL}/api/shiprocket/auth`, { method: 'POST' })
+            if (!authResp.ok) {
+                throw new Error('Failed to authenticate with Shiprocket')
+            }
+            
+            // Now fetch shipments
+            // Fetch first page from shipments endpoint (has more orders than /orders endpoint)
+            const firstResp = await fetch(`${API_BASE_URL}/api/shiprocket/shipments?page=1&per_page=100&from_date=${filterFromDate}${filterToDate ? '&to_date=' + filterToDate : ''}`)
+            if (!firstResp.ok) {
+                throw new Error('Failed to fetch Shiprocket shipments')
             }
 
-            const data = await resp.json()
-            const orders = data.orders || []
-            setLastSync(new Date())
+            const firstData = await firstResp.json()
+            const firstPageOrders = firstData.orders || []
+            const totalOrders = firstData.pagination?.total || firstPageOrders.length
+            const totalPages = Math.ceil(totalOrders / 100)
 
-            // Save/update all orders in Firestore (check and update if exists)
-            const db = getDb()
-            let savedCount = 0
-            let updatedCount = 0
+            console.log('🔄 Sync Debug:', { totalOrders, firstPageCount: firstPageOrders.length, totalPages, pagination: firstData.pagination })
 
-            for (const order of orders) {
-                try {
-                    // Skip orders without shiprocketOrderId (can't track them)
-                    if (!order.shiprocketOrderId) {
-                        console.warn(`Skipping order ${order.orderNumber} - no shiprocketOrderId`)
-                        continue
+            if (!silent) {
+                setSyncStatus({ status: `Found ${totalOrders} shipments. Fetching pages (1/${totalPages})...`, progress: 0 })
+            }
+
+            let allOrders = [...firstPageOrders]
+
+            // Fetch remaining pages if any
+            if (totalPages > 1) {
+                for (let page = 2; page <= totalPages; page++) {
+                    if (!silent) {
+                        setSyncStatus({ status: `Fetching page ${page} of ${totalPages}...`, progress: Math.round((page - 1) / totalPages * 50) })
                     }
-
-                    // Filter out undefined values
-                    const cleanOrder = Object.fromEntries(
-                        Object.entries(order).filter(([_, value]) => value !== undefined)
-                    )
-
-                    // Check if order already exists by shiprocketOrderId
-                    const existingQuery = query(
-                        collection(db, ORDERS_COLLECTION),
-                        where('shiprocketOrderId', '==', order.shiprocketOrderId)
-                    )
-                    const existingDocs = await getDocs(existingQuery)
-
-                    if (existingDocs.empty) {
-                        // Create new order
-                        await addDoc(collection(db, ORDERS_COLLECTION), {
-                            ...cleanOrder,
-                            source: 'shiprocket',
-                            platform: 'Shiprocket',
-                            orderType: 'shiprocket_import',
-                            createdAt: serverTimestamp(),
-                            syncedAt: serverTimestamp()
-                        })
-                        savedCount++
-                    } else {
-                        // Update existing order with new data (keep createdAt, update syncedAt and status)
-                        const existingDoc = existingDocs.docs[0]
-                        await updateDoc(doc(db, ORDERS_COLLECTION, existingDoc.id), {
-                            ...cleanOrder,
-                            source: 'shiprocket',
-                            platform: 'Shiprocket',
-                            syncedAt: serverTimestamp()
-                            // Note: createdAt is NOT updated, preserving original creation time
-                        })
-                        updatedCount++
+                    const pageResp = await fetch(`${API_BASE_URL}/api/shiprocket/shipments?page=${page}&per_page=100&from_date=${filterFromDate}${filterToDate ? '&to_date=' + filterToDate : ''}`)
+                    if (pageResp.ok) {
+                        const pageData = await pageResp.json()
+                        allOrders = allOrders.concat(pageData.orders || [])
                     }
-                } catch (err) {
-                    console.error(`Failed to sync order ${order.orderNumber}:`, err)
                 }
             }
 
+            const orders = allOrders
+            setLastSync(new Date())
+            
+            // Set orders to local state for display
+            setShiprocketOrders(orders)
+            
             if (!silent) {
-                const message = updatedCount > 0 
-                    ? `✅ Synced ${savedCount} new, updated ${updatedCount} existing orders`
-                    : `✅ Synced ${savedCount} new orders`
+                setSyncStatus({ status: `Saving ${orders.length} orders to database...`, progress: 95 })
+            }
+
+            // Save to Firestore so they're available on all devices
+            const db = getDb()
+            let savedCount = 0
+            
+            // Write in batches with delays to avoid quota exceeded errors
+            for (let i = 0; i < orders.length; i++) {
+                const order = orders[i]
+                try {
+                    const shiprocketId = order.shiprocketOrderId || order.id
+                    
+                    const orderRef = query(collection(db, ORDERS_COLLECTION), 
+                        where('shiprocketOrderId', '==', shiprocketId))
+                    const existing = await getDocs(orderRef)
+                    
+                    if (existing.empty) {
+                        // New order - add it
+                        const docRef = await addDoc(collection(db, ORDERS_COLLECTION), {
+                            ...order,
+                            shiprocketOrderId: shiprocketId,
+                            source: 'shiprocket',
+                            platform: 'Shiprocket',
+                            createdAt: serverTimestamp(),
+                            updatedAt: serverTimestamp()
+                        })
+                        savedCount++
+                        console.log(`✅ Saved ${savedCount}/${orders.length} orders`)
+                    }
+                } catch (err) {
+                    console.error('Error saving order to Firestore:', err)
+                }
+                
+                // Add delay every 5 writes to avoid quota exceeded
+                if ((i + 1) % 5 === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 500))
+                }
+            }
+            
+            if (!silent) {
+                setSyncStatus({ status: `Saved ${savedCount}/${orders.length} orders...`, progress: 98 })
+            }
+
+            if (!silent) {
                 setSyncStatus({ 
-                    status: message, 
+                    status: `✅ Synced ${orders.length} shipments (${savedCount} new) - view in Shiprocket tab, import via Orders tab`, 
                     success: true 
                 })
-
-                // Reload page to show new/updated orders (only on manual sync, not auto)
-                setTimeout(() => {
-                    window.location.reload()
-                }, 1500)
+                console.log(`Sync complete: ${orders.length} shipments, ${savedCount} saved to Firestore`)
             } else {
-                // Auto-sync: just update local state without reload
-                console.log(`Auto-sync: ${savedCount} new, ${updatedCount} updated`);
+                // Auto-sync: just logged
+                console.log(`Auto-sync: ${orders.length} shipments, ${savedCount} new to Firestore`);
+            }
+            
+            // Refresh parent allOrders so Orders tab can find them
+            if (onRefreshOrders && savedCount > 0) {
+                onRefreshOrders()
             }
         } catch (error) {
             console.error('Sync error:', error)
@@ -180,7 +239,7 @@ export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
                         <p className="text-orange-200/80">
                             View all orders synced from Shiprocket (Auto-syncs every 30 seconds)
                         </p>
-                        <div className="flex items-center gap-4 mt-2">
+                        <div className="flex items-center gap-4 mt-2 flex-wrap">
                             <p className="text-sm text-orange-300/60">
                                 Total: {shiprocketOrders.length} orders
                             </p>
@@ -190,8 +249,34 @@ export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
                                 </p>
                             )}
                         </div>
+                        {/* Date Filters */}
+                        <div className="flex items-center gap-2 mt-3 flex-wrap">
+                            <label className="text-xs text-orange-300/80">From:</label>
+                            <input 
+                                type="date" 
+                                value={filterFromDate} 
+                                onChange={(e) => setFilterFromDate(e.target.value)}
+                                className="text-xs bg-orange-900/40 border border-orange-500/50 text-orange-100 rounded px-2 py-1"
+                            />
+                            <label className="text-xs text-orange-300/80">To:</label>
+                            <input 
+                                type="date" 
+                                value={filterToDate} 
+                                onChange={(e) => setFilterToDate(e.target.value)}
+                                className="text-xs bg-orange-900/40 border border-orange-500/50 text-orange-100 rounded px-2 py-1"
+                            />
+                        </div>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 flex-wrap">
+                        <select
+                            value={sortBy}
+                            onChange={(e) => setSortBy(e.target.value)}
+                            className="text-xs bg-orange-900/40 border border-orange-500/50 text-orange-100 rounded px-2 py-2 font-semibold hover:bg-orange-900/60 transition-colors"
+                            title="Sort orders by date"
+                        >
+                            <option value="newest">📅 Newest First</option>
+                            <option value="oldest">📅 Oldest First</option>
+                        </select>
                         <button
                             onClick={() => handleSync(false)}
                             disabled={isSyncing}
@@ -239,171 +324,163 @@ export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
                     </button>
                 </div>
             ) : (
-                <div className="grid gap-4">
-                    {shiprocketOrders.map(order => {
-                        const isExpanded = expandedOrder === order.id
+                <div className="space-y-3">
+                    {[...shiprocketOrders].sort((a, b) => {
+                        const dateA = new Date(a.orderDate || 0)
+                        const dateB = new Date(b.orderDate || 0)
+                        return sortBy === 'newest' ? dateB - dateA : dateA - dateB
+                    }).map(order => {
+                        const isExpanded = expandedOrder === (order.shiprocketOrderId || order.id)
                         return (
                             <div
-                                key={order.id}
-                                className="bg-gradient-to-r from-gray-900 to-gray-800 border-2 border-orange-500/30 rounded-2xl overflow-hidden hover:border-orange-500/60 transition-all shadow-lg"
+                                key={order.shiprocketOrderId || order.id}
+                                className="bg-emerald-pine/20 border-2 border-lime-glow/40 hover:border-lime-glow/60 p-2 md:p-4 rounded-2xl shadow-card cursor-pointer transition-all"
                             >
-                                {/* Main Order Card */}
+                                {/* Main Order Card - matching Orders.jsx style */}
                                 <div
-                                    onClick={() => setExpandedOrder(isExpanded ? null : order.id)}
-                                    className="p-5 cursor-pointer hover:bg-gray-800/50 transition-colors"
+                                    onClick={() => setExpandedOrder(isExpanded ? null : (order.shiprocketOrderId || order.id))}
+                                    className="flex gap-2 md:gap-3"
                                 >
-                                    <div className="flex items-start justify-between gap-4">
-                                        <div className="flex-1">
-                                            {/* Order Header */}
-                                            <div className="flex items-center gap-3 mb-3 flex-wrap">
-                                                <span className="text-2xl font-mono text-orange-400 font-bold">
-                                                    #{order.orderNumber || order.shiprocketOrderId}
+                                    {/* Order Image Placeholder */}
+                                    <div className="w-12 h-12 md:w-14 md:h-14 rounded-xl bg-orange-600/20 flex items-center justify-center flex-shrink-0 border-2 border-orange-500/30">
+                                        <Package className="w-6 h-6 md:w-7 md:h-7 text-orange-400" />
+                                    </div>
+
+                                    <div className="flex-1 min-w-0">
+                                        {/* Order number and badges - mobile optimized */}
+                                        <div className="flex items-center gap-1 md:gap-2 flex-wrap mb-0.5 md:mb-1">
+                                            <span className="font-mono text-lime-glow font-bold text-xs md:text-sm">
+                                                #{order.orderNumber || order.shiprocketOrderId}
+                                            </span>
+                                            <span className="text-[8px] md:text-[10px] font-bold px-1.5 md:px-2 py-0.5 rounded border whitespace-nowrap bg-orange-600/80 text-white border-orange-500">
+                                                🚚 SHIPROCKET
+                                            </span>
+                                            {order.awb && (
+                                                <span className="text-[8px] md:text-[10px] font-mono bg-emerald-pine/60 border border-lime-glow/40 px-1.5 py-0.5 rounded text-lime-glow">
+                                                    AWB: {order.awb}
                                                 </span>
-                                                <span className="px-3 py-1 bg-orange-600/80 text-white text-xs font-bold rounded-full border border-orange-500">
-                                                    🚚 SHIPROCKET
-                                                </span>
-                                                {order.awb && (
-                                                    <span className="text-xs text-gray-400 font-mono bg-gray-700/50 px-2 py-1 rounded">
-                                                        AWB: {order.awb}
-                                                    </span>
-                                                )}
-                                            </div>
-
-                                            {/* Customer Info */}
-                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-                                                <div className="flex items-center gap-2 text-sm">
-                                                    <Package className="w-4 h-4 text-orange-400" />
-                                                    <span className="text-white font-semibold">{order.customerName || 'Unknown Customer'}</span>
-                                                </div>
-                                                {order.phone && (
-                                                    <div className="flex items-center gap-2 text-sm">
-                                                        <Phone className="w-4 h-4 text-orange-400" />
-                                                        <span className="text-gray-300">{order.phone}</span>
-                                                    </div>
-                                                )}
-                                                {order.email && (
-                                                    <div className="flex items-center gap-2 text-sm">
-                                                        <Mail className="w-4 h-4 text-orange-400" />
-                                                        <span className="text-gray-300">{order.email}</span>
-                                                    </div>
-                                                )}
-                                                {order.address && (
-                                                    <div className="flex items-start gap-2 text-sm md:col-span-2">
-                                                        <MapPin className="w-4 h-4 text-orange-400 mt-0.5 flex-shrink-0" />
-                                                        <span className="text-gray-300">
-                                                            {typeof order.address === 'string' 
-                                                                ? order.address 
-                                                                : `${order.address.line1 || ''} ${order.address.city || ''} ${order.address.state || ''} ${order.address.zip || ''}`.trim()
-                                                            }
-                                                        </span>
-                                                    </div>
-                                                )}
-                                            </div>
-
-                                            {/* Order Details */}
-                                            <div className="flex items-center gap-4 flex-wrap text-xs">
-                                                {order.courier && (
-                                                    <div className="flex items-center gap-1">
-                                                        <Truck className="w-3 h-3 text-orange-400" />
-                                                        <span className="text-gray-400">{order.courier}</span>
-                                                    </div>
-                                                )}
-                                                {order.status && (
-                                                    <span className={`px-2 py-1 rounded-full ${
-                                                        order.status.toLowerCase().includes('delivered') ? 'bg-green-900/40 text-green-300' :
-                                                        order.status.toLowerCase().includes('shipped') ? 'bg-blue-900/40 text-blue-300' :
-                                                        'bg-gray-700 text-gray-300'
-                                                    }`}>
-                                                        {order.status}
-                                                    </span>
-                                                )}
-                                                {order.weight && (
-                                                    <span className="text-gray-400">Weight: {order.weight} kg</span>
-                                                )}
-                                                {order.orderDate && (
-                                                    <div className="flex items-center gap-1">
-                                                        <Calendar className="w-3 h-3 text-orange-400" />
-                                                        <span className="text-gray-400">
-                                                            {new Date(order.orderDate).toLocaleDateString()}
-                                                        </span>
-                                                    </div>
-                                                )}
-                                            </div>
-                                        </div>
-
-                                        {/* Expand Button */}
-                                        <div className="flex-shrink-0">
-                                            {isExpanded ? (
-                                                <ChevronUp className="w-6 h-6 text-orange-400" />
-                                            ) : (
-                                                <ChevronDown className="w-6 h-6 text-orange-400" />
                                             )}
                                         </div>
+
+                                        {/* Status badge */}
+                                        {order.status && (
+                                            <div className="mb-0.5 md:mb-1">
+                                                <span className={`text-[8px] md:text-[10px] font-bold px-1.5 md:px-2 py-0.5 rounded border inline-block ${
+                                                    order.status.toLowerCase().includes('delivered') ? 'bg-lime-glow/20 text-lime-glow border-lime-glow/50' :
+                                                    order.status.toLowerCase().includes('shipped') ? 'bg-emerald-700/80 text-white border-emerald-600' :
+                                                    order.status.toLowerCase().includes('pending') ? 'bg-amber-600/80 text-white border-amber-500' :
+                                                    'bg-gray-700 text-white border-gray-600'
+                                                }`}>
+                                                    {order.status}
+                                                </span>
+                                            </div>
+                                        )}
+
+                                        {/* Customer name and details - condensed */}
+                                        <h4 className="font-bold text-white text-xs md:text-sm leading-tight mb-0.5">
+                                            {order.customerName || 'Unknown Customer'}
+                                        </h4>
+
+                                        {/* Outfit name and pricing */}
+                                        <div className="flex items-center justify-between gap-2 mb-0.5">
+                                            <div className="flex-1">
+                                                {order.items && order.items.length > 0 && (
+                                                    <h5 className="font-bold text-white text-xs md:text-sm leading-tight">
+                                                        {order.items[0].name || order.items[0].product_name || 'Outfit'}
+                                                    </h5>
+                                                )}
+                                            </div>
+                                            {parseFloat(order.sellingPrice) > 0 && (
+                                                <span className="font-bold text-lime-glow text-xs md:text-sm bg-emerald-pine/40 border border-lime-glow/30 px-2 py-0.5 rounded whitespace-nowrap">
+                                                    ₹{parseFloat(order.sellingPrice).toFixed(2)}
+                                                </span>
+                                            )}
+                                        </div>
+
+                                        {/* Phone, email, courier - condensed */}
+                                        <div className="flex items-center gap-1 md:gap-2 text-[10px] md:text-xs text-lime-glow/80 flex-wrap">
+                                            {order.phone && order.phone !== 'xxxxxxxxxx' && (
+                                                <span className="bg-emerald-pine/60 border border-lime-glow/40 px-1 rounded flex items-center gap-1">
+                                                    <Phone className="w-2.5 h-2.5 md:w-3 md:h-3" />
+                                                    {order.phone}
+                                                </span>
+                                            )}
+                                            {order.courier && (
+                                                <span className="bg-emerald-pine/60 border border-lime-glow/40 px-1 rounded flex items-center gap-1">
+                                                    <Truck className="w-2.5 h-2.5 md:w-3 md:h-3" />
+                                                    {order.courier}
+                                                </span>
+                                            )}
+                                            {order.weight && (
+                                                <span className="text-lime-glow/60">{order.weight}kg</span>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* Expand/Collapse Icon */}
+                                    <div className="flex-shrink-0 flex items-center">
+                                        {isExpanded ? (
+                                            <ChevronUp className="w-5 h-5 md:w-6 md:h-6 text-lime-glow" />
+                                        ) : (
+                                            <ChevronDown className="w-5 h-5 md:w-6 md:h-6 text-lime-glow/60" />
+                                        )}
                                     </div>
                                 </div>
 
                                 {/* Expanded Details */}
                                 {isExpanded && (
-                                    <div className="border-t border-orange-500/20 bg-gray-900/50 p-5 space-y-4">
-                                        {/* Shiprocket IDs */}
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                            {order.shiprocketOrderId && (
-                                                <div className="bg-gray-800/50 p-3 rounded-lg">
-                                                    <p className="text-xs text-gray-400 uppercase tracking-wide">Shiprocket Order ID</p>
-                                                    <p className="text-sm text-orange-300 font-mono mt-1">{order.shiprocketOrderId}</p>
+                                    <div className="mt-3 pt-3 border-t border-lime-glow/20 space-y-2">
+                                        {/* Email & Address */}
+                                        {order.email && (
+                                            <div className="bg-emerald-pine/40 border border-lime-glow/30 rounded-lg p-2">
+                                                <div className="flex items-center gap-2 text-xs">
+                                                    <Mail className="w-3 h-3 text-lime-glow" />
+                                                    <span className="text-white">{order.email}</span>
                                                 </div>
-                                            )}
-                                            {order.shipmentId && (
-                                                <div className="bg-gray-800/50 p-3 rounded-lg">
-                                                    <p className="text-xs text-gray-400 uppercase tracking-wide">Shipment ID</p>
-                                                    <p className="text-sm text-orange-300 font-mono mt-1">{order.shipmentId}</p>
-                                                </div>
-                                            )}
-                                            {order.trackingNumber && (
-                                                <div className="bg-gray-800/50 p-3 rounded-lg">
-                                                    <p className="text-xs text-gray-400 uppercase tracking-wide">Tracking Number</p>
-                                                    <p className="text-sm text-orange-300 font-mono mt-1">{order.trackingNumber}</p>
-                                                </div>
-                                            )}
-                                            {order.platform && (
-                                                <div className="bg-gray-800/50 p-3 rounded-lg">
-                                                    <p className="text-xs text-gray-400 uppercase tracking-wide">Channel/Platform</p>
-                                                    <p className="text-sm text-orange-300 font-mono mt-1">{order.platform}</p>
-                                                </div>
-                                            )}
-                                        </div>
-
-                                        {/* Address Details */}
-                                        {order.address && typeof order.address === 'object' && (
-                                            <div className="bg-gray-800/50 p-3 rounded-lg">
-                                                <p className="text-xs text-gray-400 uppercase tracking-wide mb-2">Full Address</p>
-                                                <div className="text-sm text-gray-300 space-y-1 font-mono">
-                                                    {order.address.line1 && <p>📍 {order.address.line1}</p>}
-                                                    {order.address.line2 && <p>📍 {order.address.line2}</p>}
-                                                    {order.address.city && <p>🏙️ {order.address.city}, {order.address.state} {order.address.zip}</p>}
-                                                    {order.address.country && <p>🌍 {order.address.country}</p>}
+                                            </div>
+                                        )}
+                                        {order.address && (
+                                            <div className="bg-emerald-pine/40 border border-lime-glow/30 rounded-lg p-2">
+                                                <div className="flex items-start gap-2 text-xs">
+                                                    <MapPin className="w-3 h-3 text-lime-glow mt-0.5 flex-shrink-0" />
+                                                    <span className="text-white">
+                                                        {typeof order.address === 'string' 
+                                                            ? order.address 
+                                                            : `${order.address.line1 || ''} ${order.address.city || ''} ${order.address.state || ''} ${order.address.zip || ''}`.trim()
+                                                        }
+                                                    </span>
                                                 </div>
                                             </div>
                                         )}
 
                                         {/* Order Items */}
                                         {order.items && Array.isArray(order.items) && order.items.length > 0 && (
-                                            <div className="bg-gray-800/50 p-3 rounded-lg">
-                                                <p className="text-xs text-gray-400 uppercase tracking-wide mb-3">Items in Order</p>
-                                                <div className="space-y-2">
+                                            <div className="bg-emerald-pine/40 border border-lime-glow/30 rounded-lg p-2">
+                                                <p className="text-[10px] text-lime-glow/70 uppercase tracking-wide mb-2 font-semibold">Items ({order.items.length})</p>
+                                                <div className="space-y-1.5">
                                                     {order.items.map((item, idx) => (
-                                                        <div key={idx} className="bg-gray-700/50 p-2 rounded border border-gray-600/50">
+                                                        <div key={idx} className="bg-emerald-pine/60 rounded p-1.5 border border-lime-glow/20">
                                                             <div className="flex items-start gap-2">
-                                                                <Package2 className="w-4 h-4 text-orange-400 mt-0.5 flex-shrink-0" />
-                                                                <div className="text-xs text-gray-300 flex-1">
-                                                                    <p className="font-semibold text-white">{item.name || item.product_name || 'Item ' + (idx + 1)}</p>
-                                                                    <div className="mt-1 grid grid-cols-3 gap-2 text-gray-400">
-                                                                        {item.quantity && <p>Qty: {item.quantity}</p>}
-                                                                        {item.sku && <p>SKU: {item.sku}</p>}
-                                                                        {item.price && <p>₹{item.price}</p>}
+                                                                <Package2 className="w-3 h-3 text-lime-glow mt-0.5 flex-shrink-0" />
+                                                                <div className="text-xs text-white flex-1">
+                                                                    <p className="font-semibold">{item.name || item.product_name || 'Item ' + (idx + 1)}</p>
+                                                                    <div className="mt-0.5 flex items-center gap-2 text-[10px] text-lime-glow/70 flex-wrap">
+                                                                        {item.quantity && <span>Qty: {item.quantity}</span>}
+                                                                        {(item.channel_sku || item.sku) && (
+                                                                            <span className="font-mono bg-lime-glow/10 px-1 rounded">
+                                                                                {item.channel_sku || item.sku}
+                                                                            </span>
+                                                                        )}
+                                                                        {item.product_cost && (
+                                                                            <span className="text-lime-glow">Cost: ₹{parseFloat(item.product_cost).toFixed(2)}</span>
+                                                                        )}
+                                                                        {item.discount && item.discount > 0 && (
+                                                                            <span className="text-orange-400">-₹{parseFloat(item.discount).toFixed(2)}</span>
+                                                                        )}
+                                                                        {item.selling_price && item.selling_price > 0 && (
+                                                                            <span className="font-bold text-lime-glow">₹{parseFloat(item.selling_price).toFixed(2)}</span>
+                                                                        )}
                                                                     </div>
-                                                                    {item.hsn && <p className="text-gray-500 mt-1">HSN: {item.hsn}</p>}
-                                                                    {item.tax && <p className="text-gray-500">Tax: {item.tax}%</p>}
                                                                 </div>
                                                             </div>
                                                         </div>
@@ -412,30 +489,77 @@ export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
                                             </div>
                                         )}
 
-                                        {/* Metadata */}
-                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-                                            {order.createdAt && (
-                                                <div className="bg-gray-800/50 p-2 rounded">
-                                                    <p className="text-gray-400">Created</p>
-                                                    <p className="text-orange-300 text-xs mt-1">
-                                                        {order.createdAt.toDate ? new Date(order.createdAt.toDate()).toLocaleDateString() : new Date(order.createdAt).toLocaleDateString()}
-                                                    </p>
+                                        {/* Pricing Details */}
+                                        {(order.sellingPrice || order.discount) && (
+                                            <div className="bg-emerald-pine/40 border border-lime-glow/30 rounded-lg p-2">
+                                                <p className="text-[10px] text-lime-glow/70 uppercase tracking-wide mb-2 font-semibold">Payment Details</p>
+                                                <div className="grid grid-cols-2 gap-2 text-xs">
+                                                    {order.sellingPrice > 0 && (
+                                                        <div>
+                                                            <span className="text-lime-glow/60">Total Amount:</span>
+                                                            <p className="font-bold text-lime-glow text-sm">₹{order.sellingPrice}</p>
+                                                        </div>
+                                                    )}
+                                                    {order.discount > 0 && (
+                                                        <div>
+                                                            <span className="text-lime-glow/60">Discount:</span>
+                                                            <p className="font-bold text-orange-400">₹{order.discount}</p>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* Shiprocket IDs */}
+                                        <div className="grid grid-cols-2 gap-2">
+                                            {order.shiprocketOrderId && (
+                                                <div className="bg-emerald-pine/40 border border-lime-glow/30 rounded-lg p-2">
+                                                    <p className="text-[9px] text-lime-glow/60 uppercase tracking-wide">SR Order ID</p>
+                                                    <p className="text-[10px] text-white font-mono mt-0.5">{order.shiprocketOrderId}</p>
                                                 </div>
                                             )}
-                                            {order.updatedAt && (
-                                                <div className="bg-gray-800/50 p-2 rounded">
-                                                    <p className="text-gray-400">Updated</p>
-                                                    <p className="text-orange-300 text-xs mt-1">
-                                                        {order.updatedAt.toDate ? new Date(order.updatedAt.toDate()).toLocaleDateString() : new Date(order.updatedAt).toLocaleDateString()}
+                                            {order.shipmentId && (
+                                                <div className="bg-emerald-pine/40 border border-lime-glow/30 rounded-lg p-2">
+                                                    <p className="text-[9px] text-lime-glow/60 uppercase tracking-wide">Shipment ID</p>
+                                                    <p className="text-[10px] text-white font-mono mt-0.5">{order.shipmentId}</p>
+                                                </div>
+                                            )}
+                                            {order.trackingNumber && (
+                                                <div className="bg-emerald-pine/40 border border-lime-glow/30 rounded-lg p-2">
+                                                    <p className="text-[9px] text-lime-glow/60 uppercase tracking-wide">Tracking</p>
+                                                    <p className="text-[10px] text-white font-mono mt-0.5">{order.trackingNumber}</p>
+                                                </div>
+                                            )}
+                                            {order.orderDate && (
+                                                <div className="bg-emerald-pine/40 border border-lime-glow/30 rounded-lg p-2">
+                                                    <p className="text-[9px] text-lime-glow/60 uppercase tracking-wide">Order Date</p>
+                                                    <p className="text-[10px] text-white mt-0.5">
+                                                        {new Date(order.orderDate).toLocaleDateString()}
                                                     </p>
                                                 </div>
                                             )}
                                         </div>
 
-                                        {/* Raw JSON */}
-                                        <details className="bg-gray-800/50 p-3 rounded-lg cursor-pointer">
-                                            <summary className="text-xs text-gray-400 uppercase tracking-wide font-semibold">View Raw Data</summary>
-                                            <pre className="text-xs text-gray-400 mt-2 overflow-x-auto bg-gray-900 p-2 rounded border border-gray-700">
+                                        {/* Timestamps */}
+                                        <div className="flex items-center gap-2 text-[9px] text-lime-glow/50">
+                                            {order.createdAt && (
+                                                <span>
+                                                    Created: {order.createdAt.toDate ? new Date(order.createdAt.toDate()).toLocaleDateString() : new Date(order.createdAt).toLocaleDateString()}
+                                                </span>
+                                            )}
+                                            {order.syncedAt && (
+                                                <span>
+                                                    • Synced: {order.syncedAt.toDate ? new Date(order.syncedAt.toDate()).toLocaleDateString() : new Date(order.syncedAt).toLocaleDateString()}
+                                                </span>
+                                            )}
+                                        </div>
+
+                                        {/* Raw JSON View */}
+                                        <details className="mt-2">
+                                            <summary className="cursor-pointer text-[10px] text-lime-glow/70 hover:text-lime-glow font-semibold">
+                                                View Raw Data
+                                            </summary>
+                                            <pre className="mt-2 p-2 bg-black/50 rounded-lg overflow-x-auto text-[9px] text-lime-glow/60 border border-lime-glow/20 max-h-64 overflow-y-auto">
                                                 {JSON.stringify(order, null, 2)}
                                             </pre>
                                         </details>
