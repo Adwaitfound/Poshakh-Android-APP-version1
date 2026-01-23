@@ -1,5 +1,9 @@
 import React, { useState, useEffect } from 'react'
 import { RefreshCw, Package, Truck, MapPin, Phone, Mail, Calendar, ChevronDown, ChevronUp, Package2 } from 'lucide-react'
+import { collection, addDoc, serverTimestamp, query, where, getDocs } from 'firebase/firestore'
+import { getDb } from '../firebase'
+
+const ORDERS_COLLECTION = 'production_orders'
 
 export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
     const [isSyncing, setIsSyncing] = useState(false)
@@ -36,17 +40,42 @@ export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
             }
 
             const data = await resp.json()
+            const orders = data.orders || []
             setLastSync(new Date())
-            
-            if (!silent) {
-                setSyncStatus({ 
-                    status: `✅ Fetched ${data.orders?.length || 0} orders from Shiprocket`, 
-                    success: true 
-                })
+
+            // Save all orders to Firestore
+            const db = getDb()
+            let savedCount = 0
+
+            for (const order of orders) {
+                try {
+                    // Filter out undefined values
+                    const cleanOrder = Object.fromEntries(
+                        Object.entries(order).filter(([_, value]) => value !== undefined)
+                    )
+
+                    // Add to Firestore
+                    await addDoc(collection(db, ORDERS_COLLECTION), {
+                        ...cleanOrder,
+                        source: 'shiprocket',
+                        platform: 'Shiprocket',
+                        orderType: 'shiprocket_import',
+                        createdAt: serverTimestamp(),
+                        syncedAt: serverTimestamp()
+                    })
+                    savedCount++
+                } catch (err) {
+                    console.error(`Failed to save order ${order.orderNumber}:`, err)
+                }
             }
 
-            // Reload page to show new orders
             if (!silent) {
+                setSyncStatus({ 
+                    status: `✅ Synced ${savedCount} orders from Shiprocket to app`, 
+                    success: true 
+                })
+
+                // Reload page to show new orders
                 setTimeout(() => {
                     window.location.reload()
                 }, 1500)
