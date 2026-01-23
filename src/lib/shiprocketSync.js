@@ -45,7 +45,8 @@ export async function syncShiprocketOrder(shiprocketOrder) {
   )
   const existing = await getDocs(q)
 
-  const orderData = {
+  // Build order data, filtering out undefined values
+  const rawOrderData = {
     orderNumber: shiprocketOrder.orderNumber,
     shiprocketOrderId: shiprocketOrder.shiprocketOrderId,
     shipmentId: shiprocketOrder.shipmentId,
@@ -63,6 +64,11 @@ export async function syncShiprocketOrder(shiprocketOrder) {
     sourceData: shiprocketOrder, // Store full response for reference
     updatedAt: serverTimestamp(),
   }
+
+  // Filter out undefined values (Firestore doesn't allow them)
+  const orderData = Object.fromEntries(
+    Object.entries(rawOrderData).filter(([_, value]) => value !== undefined)
+  )
 
   if (existing.size > 0) {
     // Update existing order
