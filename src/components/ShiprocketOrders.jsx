@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
-import { RefreshCw, Package, Truck, MapPin, Phone, Mail, Calendar, ChevronDown, ChevronUp, Package2 } from 'lucide-react'
-import { collection, addDoc, serverTimestamp, query, where, getDocs } from 'firebase/firestore'
+import { RefreshCw, Package, Truck, MapPin, Phone, Mail, Calendar, ChevronDown, ChevronUp, Package2, Trash2 } from 'lucide-react'
+import { collection, addDoc, serverTimestamp, query, where, getDocs, deleteDoc, doc } from 'firebase/firestore'
 import { getDb } from '../firebase'
 
 const ORDERS_COLLECTION = 'production_orders'
@@ -29,6 +29,47 @@ export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
         setShiprocketOrders(filtered)
     }, [allOrders])
 
+    const handleClearAll = async () => {
+        if (!window.confirm('Delete all Shiprocket orders? This cannot be undone.')) {
+            return
+        }
+
+        setIsSyncing(true)
+        setSyncStatus({ status: 'Deleting all orders...', progress: 0 })
+
+        try {
+            const db = getDb()
+            const q = query(
+                collection(db, ORDERS_COLLECTION),
+                where('source', '==', 'shiprocket')
+            )
+            const docs = await getDocs(q)
+            
+            let deletedCount = 0
+            for (const docSnap of docs.docs) {
+                await deleteDoc(doc(db, ORDERS_COLLECTION, docSnap.id))
+                deletedCount++
+            }
+
+            setSyncStatus({ 
+                status: `✅ Deleted ${deletedCount} orders`, 
+                success: true 
+            })
+
+            setTimeout(() => {
+                window.location.reload()
+            }, 1500)
+        } catch (error) {
+            console.error('Delete error:', error)
+            setSyncStatus({
+                status: `❌ Delete failed: ${error.message}`,
+                error: true
+            })
+        } finally {
+            setIsSyncing(false)
+        }
+    }
+
     const handleSync = async (silent = false) => {
         if (!silent) setIsSyncing(true)
         if (!silent) setSyncStatus({ status: 'Connecting to Shiprocket...', progress: 0 })
@@ -43,27 +84,40 @@ export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
             const orders = data.orders || []
             setLastSync(new Date())
 
-            // Save all orders to Firestore
+            // Save all orders to Firestore (with duplicate check)
             const db = getDb()
             let savedCount = 0
+            let skippedCount = 0
 
             for (const order of orders) {
                 try {
-                    // Filter out undefined values
-                    const cleanOrder = Object.fromEntries(
-                        Object.entries(order).filter(([_, value]) => value !== undefined)
+                    // Check if order already exists by shiprocketOrderId
+                    const existingQuery = query(
+                        collection(db, ORDERS_COLLECTION),
+                        where('shiprocketOrderId', '==', order.shiprocketOrderId)
                     )
+                    const existingDocs = await getDocs(existingQuery)
 
-                    // Add to Firestore
-                    await addDoc(collection(db, ORDERS_COLLECTION), {
-                        ...cleanOrder,
-                        source: 'shiprocket',
-                        platform: 'Shiprocket',
-                        orderType: 'shiprocket_import',
-                        createdAt: serverTimestamp(),
-                        syncedAt: serverTimestamp()
-                    })
-                    savedCount++
+                    // Only save if this order doesn't exist yet
+                    if (existingDocs.empty) {
+                        // Filter out undefined values
+                        const cleanOrder = Object.fromEntries(
+                            Object.entries(order).filter(([_, value]) => value !== undefined)
+                        )
+
+                        // Add to Firestore
+                        await addDoc(collection(db, ORDERS_COLLECTION), {
+                            ...cleanOrder,
+                            source: 'shiprocket',
+                            platform: 'Shiprocket',
+                            orderType: 'shiprocket_import',
+                            createdAt: serverTimestamp(),
+                            syncedAt: serverTimestamp()
+                        })
+                        savedCount++
+                    } else {
+                        skippedCount++
+                    }
                 } catch (err) {
                     console.error(`Failed to save order ${order.orderNumber}:`, err)
                 }
@@ -71,7 +125,7 @@ export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
 
             if (!silent) {
                 setSyncStatus({ 
-                    status: `✅ Synced ${savedCount} orders from Shiprocket to app`, 
+                    status: `✅ Synced ${savedCount} new orders (${skippedCount} already exist)`, 
                     success: true 
                 })
 
@@ -117,14 +171,25 @@ export default function ShiprocketOrders({ allOrders = [], onViewOrder }) {
                             )}
                         </div>
                     </div>
-                    <button
-                        onClick={() => handleSync(false)}
-                        disabled={isSyncing}
-                        className="px-6 py-3 bg-orange-500 text-white rounded-xl font-bold hover:bg-orange-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-lg"
-                    >
-                        <RefreshCw className={`w-5 h-5 ${isSyncing ? 'animate-spin' : ''}`} />
-                        {isSyncing ? 'Syncing...' : 'Sync Now'}
-                    </button>
+                    <div className="flex gap-2">
+                        <button
+                            onClick={() => handleSync(false)}
+                            disabled={isSyncing}
+                            className="px-6 py-3 bg-orange-500 text-white rounded-xl font-bold hover:bg-orange-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-lg"
+                        >
+                            <RefreshCw className={`w-5 h-5 ${isSyncing ? 'animate-spin' : ''}`} />
+                            {isSyncing ? 'Syncing...' : 'Sync Now'}
+                        </button>
+                        <button
+                            onClick={handleClearAll}
+                            disabled={isSyncing || shiprocketOrders.length === 0}
+                            className="px-4 py-3 bg-red-600/80 text-white rounded-xl font-bold hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-lg"
+                            title="Delete all Shiprocket orders"
+                        >
+                            <Trash2 className="w-5 h-5" />
+                            Clear All
+                        </button>
+                    </div>
                 </div>
 
                 {/* Sync Status */}
