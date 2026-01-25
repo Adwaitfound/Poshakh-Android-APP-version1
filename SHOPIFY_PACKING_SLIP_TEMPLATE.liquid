@@ -1,0 +1,106 @@
+{%- comment -%}
+POSHAKH PACKING SLIP WITH QR CODE
+Fixed version that properly encodes all order data in QR code
+Format: orderNumber|customerName|phone|fullAddress|totalPrice|item1;item2;item3
+{%- endcomment -%}
+
+<div>
+  <div class="columns">
+    <h1>{{ "packing_slip_template.title" | t }}</h1>
+    <div class="address">
+      <p style="text-align: right; margin: 0;">
+        <!-- Order-number barcode (kept) -->
+        <s-barcode value="{{ order.name }}" /><br />
+
+        {%- comment -%}
+        Build QR data with proper field separation
+        Fields: orderNumber|customerName|phone|address|totalPrice|items
+        {%- endcomment -%}
+        
+        {%- assign qr_parts = "" | split: "," -%}
+        
+        {%- comment -%}Field 1: Order Number{%- endcomment -%}
+        {%- assign qr_parts = qr_parts | push: order.name -%}
+        
+        {%- comment -%}Field 2: Customer Name{%- endcomment -%}
+        {%- assign qr_parts = qr_parts | push: order.shipping_address.name -%}
+        
+        {%- comment -%}Field 3: Phone{%- endcomment -%}
+        {%- assign qr_parts = qr_parts | push: order.shipping_address.phone -%}
+        
+        {%- comment -%}Field 4: Full Address (address1 + address2 + city + state + zip){%- endcomment -%}
+        {%- capture full_address -%}
+          {{- order.shipping_address.address1 -}}
+          {%- if order.shipping_address.address2 %} {{ order.shipping_address.address2 }}{% endif -%}
+          {%- if order.shipping_address.city %}, {{ order.shipping_address.city }}{% endif -%}
+          {%- if order.shipping_address.province %} {{ order.shipping_address.province }}{% endif -%}
+          {%- if order.shipping_address.zip %} {{ order.shipping_address.zip }}{% endif -%}
+        {%- endcapture -%}
+        {%- assign qr_parts = qr_parts | push: full_address | strip -%}
+        
+        {%- comment -%}Field 5: Total Price{%- endcomment -%}
+        {%- capture total_price -%}{{ order.total_price | money }}{%- endcapture -%}
+        {%- assign qr_parts = qr_parts | push: total_price | strip -%}
+        
+        {%- comment -%}Field 6: Line Items (semicolon separated){%- endcomment -%}
+        {%- capture items_list -%}
+          {%- for line_item in order.line_items -%}
+            {{- line_item.title -}}
+            {%- unless forloop.last -%};{% endunless -%}
+          {%- endfor -%}
+        {%- endcapture -%}
+        {%- assign qr_parts = qr_parts | push: items_list | strip -%}
+        
+        {%- comment -%}Build final QR string{%- endcomment -%}
+        {%- assign qr_data = qr_parts | join: "|" -%}
+
+        <!-- QR CODE with full order data -->
+        <img
+          src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={{ qr_data | url_encode }}"
+          alt="Order QR Code"
+          style="width:120px; height:120px; margin:10px 0; border:2px solid #333;" />
+        <br /><small style="font-size: 10px; color: #666;">📱 Scan for auto-fill</small><br />
+
+        {{ "packing_slip_template.order_label" | t }} {{ order.order_number }}<br />
+        {% if order.po_number %}{{ "packing_slip_template.po_number_label" | t }} {{ order.po_number }}<br />{% endif %}
+        {{ order.created_at | date: "%B %e, %Y" }}
+      </p>
+    </div>
+  </div>
+
+  <div class="columns" style="margin-top: 1.5em;">
+    <div class="address">
+      <strong>{{ "packing_slip_template.from_label" | t }}</strong><br/>
+      {{ shop.name }}<br/>
+      {{ shop.address | format_address }}
+    </div>
+    {% if order.shipping_address %}
+    <div class="address">
+      <strong>{{ "packing_slip_template.ship_to_label" | t }}</strong><br/>
+      {{ order.shipping_address.name }}<br/>
+      {{ order.shipping_address.phone }}<br/>
+      {{ order.shipping_address | format_address }}
+    </div>
+    {% endif %}
+  </div>
+
+  <hr />
+
+  <h2>{{ "packing_slip_template.order_details_title" | t }}</h2>
+  <table class="table-tabular" style="margin: 1em 0 0 0;">
+    <thead>
+      <tr>
+        <th style="width: 15%; text-align: left;">{{ "packing_slip_template.column_headings.quantity" | t }}</th>
+        <th style="width: 85%; text-align: left;">{{ "packing_slip_template.column_headings.item" | t }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for line_item in order.line_items %}
+      <tr>
+        <td style="text-align: left;">{{ line_item.quantity }}</td>
+        <td style="text-align: left;">{{ line_item.title }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

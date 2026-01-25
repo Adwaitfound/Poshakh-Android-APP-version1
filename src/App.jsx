@@ -317,27 +317,30 @@ function InnerApp() {
         const counts = {}
         
         allOrders.forEach(order => {
-            // Only count completed/shipped orders (exclude imported/pending orders)
-            if (order.status !== 'Order Shipped (Completed)') return
+            // Only count completed orders: shipped, in transit, or delivered
+            const isCompleted = order.status === 'Order Shipped (Completed)' || 
+                               order.status === 'In Transit' || 
+                               order.status === 'Delivered'
+            if (!isCompleted) return
             
-            // Only count manual orders, not imported CSV orders
+            // Skip imported CSV orders (they're not from our inventory)
             if (order.source === 'Shopify CSV Import' || order.source === 'Shiprocket CSV Import') return
             
-            // For stock orders, count by outfit name
-            if (order.orderType === 'stock' && order.outfitName) {
-                const qty = parseInt(order.quantity) || 1
-                counts[order.outfitName] = (counts[order.outfitName] || 0) + qty
-                console.log(`[SOLD COUNT] Stock order: ${order.outfitName}, qty: ${qty}, total: ${counts[order.outfitName]}`)
+            // Skip cancelled or returned orders
+            if (order.status === 'Cancelled' || order.status === 'Returned') return
+            
+            const qty = parseInt(order.quantity) || 1
+            
+            // Priority 1: Use outfitId for stock orders (most accurate)
+            if (order.outfitId) {
+                counts[order.outfitId] = (counts[order.outfitId] || 0) + qty
             }
-            // For legacy/custom orders with outfit name
+            // Priority 2: Use outfit name for legacy/custom orders
             else if (order.outfitName) {
-                const qty = parseInt(order.quantity) || 1
                 counts[order.outfitName] = (counts[order.outfitName] || 0) + qty
-                console.log(`[SOLD COUNT] Legacy order: ${order.outfitName}, qty: ${qty}, total: ${counts[order.outfitName]}`)
             }
         })
         
-        console.log('[SOLD COUNTS FINAL]', counts)
         return counts
     }, [allOrders])
 
@@ -671,15 +674,15 @@ function InnerApp() {
                 )}
 
                 {/* Modals wired to state and handlers */}
-                <InventoryDetailModal item={viewInventoryItem} soldCounts={soldCounts} onClose={() => setViewInventoryItem(null)} onOpenEdit={openEditModal} onOpenStock={openStockModal} onViewHistory={(it) => { setViewInventoryItem(null); setHistoryItemId(it.id); }} onDelete={handleDeleteItem} />
-                <OrderDetailModal order={viewOrder} onClose={() => setViewOrder(null)} onEdit={(o) => { setViewOrder(null); setEditOrder(o); setShowLegacyModal(true); }} onShip={(o) => { setShippingOrderId(o.id); }} onReturn={(o) => { setReturnOrderId(o.id) }} />
+                <InventoryDetailModal item={viewInventoryItem} soldCounts={soldCounts} allOrders={allOrders} onClose={() => setViewInventoryItem(null)} onOpenEdit={openEditModal} onOpenStock={openStockModal} onViewHistory={(it) => { setViewInventoryItem(null); setHistoryItemId(it.id); }} onDelete={handleDeleteItem} />
+                <OrderDetailModal order={viewOrder} onClose={() => setViewOrder(null)} onEdit={(o) => { setViewOrder(null); setEditOrder(o); setShowLegacyModal(true); }} onShip={(o) => { setShippingOrderId(o.id); }} onReturn={(o) => { setReturnOrderId(o.id) }} userProfile={userProfile} onDataChanged={refreshAllData} />
                 <CustomerDetailModal customer={viewCustomer} onClose={() => setViewCustomer(null)} allOrders={allOrders} inventoryItems={inventoryItems} userRole={userProfile?.role} onDataChanged={refreshAllData} onAddOrder={handleAddOrderFromCustomer} />
                 <LegacyOrderModal visible={showLegacyModal} onClose={() => { setShowLegacyModal(false); setEditOrder(null); setLegacyForm(null); }} inventoryItems={inventoryItems} userProfile={userProfile} onDataChanged={refreshAllData} editOrder={editOrder} initialForm={legacyForm} />
                 <StockAdjustModal item={stockAdjustItem} type={stockAdjustType} onClose={() => { setStockAdjustItem(null); setStockAdjustType(null); }} onDataChanged={refreshAllData} userProfile={userProfile} />
                 <EditItemModal item={editingId ? inventoryItems.find(i => i.id === editingId) : null} inventoryItems={inventoryItems} db={db} onClose={() => setEditingId(null)} onDataChanged={refreshAllData} />
                 <DeleteConfirmModal visible={!!deleteOrderTargetId} orderId={deleteOrderTargetId} orderNumber={allOrders.find(o => o.id === deleteOrderTargetId)?.orderNumber} userProfile={userProfile} onClose={() => { setDeleteOrderTargetId(null); }} onDataChanged={refreshAllData} />
                 <ShippingModal visible={!!shippingOrderId} orderId={shippingOrderId} order={allOrders.find(o => o.id === shippingOrderId)} userProfile={userProfile} onClose={() => setShippingOrderId(null)} onDataChanged={refreshAllData} />
-                <ReturnModal visible={!!returnOrderId} orderId={returnOrderId} orderNumber={allOrders.find(o => o.id === returnOrderId)?.orderNumber} userProfile={userProfile} onClose={() => setReturnOrderId(null)} onDataChanged={refreshAllData} />
+                <ReturnModal visible={!!returnOrderId} orderId={returnOrderId} orderNumber={allOrders.find(o => o.id === returnOrderId)?.orderNumber} userProfile={userProfile} onClose={() => setReturnOrderId(null)} onDataChanged={refreshAllData} inventoryItems={inventoryItems} allOrders={allOrders} />
                 <ImageModal url={selectedImageUrl} onClose={() => setSelectedImageUrl(null)} />
                 <HistoryModal itemId={historyItemId} onClose={() => setHistoryItemId(null)} />
                 <ChangeHistoryModal visible={changeHistoryVisible} onClose={() => setChangeHistoryVisible(false)} />

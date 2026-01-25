@@ -1,6 +1,6 @@
-import React from 'react'
+import React, { useMemo } from 'react'
 
-export default function InventoryDetailModal({ item, soldCounts = {}, onClose, onOpenEdit, onOpenStock, onViewHistory, onDelete }) {
+export default function InventoryDetailModal({ item, soldCounts = {}, allOrders = [], onClose, onOpenEdit, onOpenStock, onViewHistory, onDelete }) {
     if (!item) return null
 
     const sizes = ['XS', 'S', 'M', 'L', 'XL', 'XXL']
@@ -11,6 +11,80 @@ export default function InventoryDetailModal({ item, soldCounts = {}, onClose, o
     // Get actual sold count from soldCounts prop (prefer id to avoid name collisions) plus manual count
     const soldFromCounts = soldCounts[item.id] ?? soldCounts[item.name] ?? 0
     const sold = (parseInt(soldFromCounts) || 0) + (parseInt(item.manualSoldCount) || 0)
+
+    // Get sales history for this outfit
+    const salesHistory = React.useMemo(() => {
+        if (item.type !== 'outfit') return []
+        return allOrders
+            .filter(order => {
+                const isCompleted = order.status === 'Order Shipped (Completed)' || 
+                                   order.status === 'In Transit' || 
+                                   order.status === 'Delivered'
+                if (!isCompleted) return false
+                if (order.source === 'Shopify CSV Import' || order.source === 'Shiprocket CSV Import') return false
+                return order.outfitId === item.id
+            })
+            .sort((a, b) => {
+                const dateA = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0
+                const dateB = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0
+                return dateB - dateA
+            })
+    }, [item, allOrders])
+
+    const downloadImage = async () => {
+        try {
+            const url = item.imageUrl
+            const fallbackName = (item.name || 'inventory-image').replace(/[^a-z0-9-_]+/gi, '_')
+
+            // If data URL, convert to Blob
+            if (url && url.startsWith('data:')) {
+                const [meta, data] = url.split(',')
+                const mimeMatch = /data:(.*?);base64/.exec(meta)
+                const mime = mimeMatch ? mimeMatch[1] : 'image/png'
+                const binary = atob(data)
+                const bytes = new Uint8Array(binary.length)
+                for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+                const blob = new Blob([bytes], { type: mime })
+                const objectUrl = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = objectUrl
+                const ext = mime.split('/')[1] || 'png'
+                a.download = `${fallbackName}.${ext}`
+                document.body.appendChild(a)
+                a.click()
+                a.remove()
+                URL.revokeObjectURL(objectUrl)
+                return
+            }
+
+            // For remote URLs, try fetch->blob to ensure download works cross-origin
+            if (url) {
+                try {
+                    const res = await fetch(url, { mode: 'cors' })
+                    const blob = await res.blob()
+                    const objectUrl = URL.createObjectURL(blob)
+                    const a = document.createElement('a')
+                    a.href = objectUrl
+                    const extGuess = blob.type?.split('/')[1] || 'jpg'
+                    a.download = `${fallbackName}.${extGuess}`
+                    document.body.appendChild(a)
+                    a.click()
+                    a.remove()
+                    URL.revokeObjectURL(objectUrl)
+                } catch {
+                    // Fallback: best-effort direct link with download attribute
+                    const a = document.createElement('a')
+                    a.href = url
+                    a.download = `${fallbackName}`
+                    document.body.appendChild(a)
+                    a.click()
+                    a.remove()
+                }
+            }
+        } catch (e) {
+            console.error('Failed to download image', e)
+        }
+    }
 
     return (
         <div className="fixed inset-0 bg-black/70 z-[60] flex items-end sm:items-center justify-center backdrop-blur-sm">
@@ -29,11 +103,18 @@ export default function InventoryDetailModal({ item, soldCounts = {}, onClose, o
                 {/* Body */}
                 <div className="p-5 sm:p-6 space-y-6">
                     {/* Image */}
-                    <div className="rounded-2xl overflow-hidden border border-emerald-700/50 shadow-lg">
+                    <div className="rounded-2xl overflow-hidden border border-emerald-700/50 shadow-lg relative">
                         <div className="w-full h-52 sm:h-64 bg-emerald-950/70 relative">
                             {item.imageUrl && <img src={item.imageUrl} className="w-full h-full object-cover" alt={item.name} />}
                             <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
                         </div>
+                        {item.imageUrl && (
+                            <div className="absolute top-3 right-3">
+                                <button onClick={downloadImage} className="px-3 py-1.5 text-xs font-bold rounded-full bg-white text-emerald-900 shadow hover:shadow-md border border-emerald-600/40">
+                                    Download Image
+                                </button>
+                            </div>
+                        )}
                     </div>
 
                     {/* Actions */}
@@ -136,6 +217,52 @@ export default function InventoryDetailModal({ item, soldCounts = {}, onClose, o
                                     <div key={size} className="p-3 rounded-xl border border-emerald-700/60 bg-emerald-950/50 text-center shadow">
                                         <p className="text-xs font-bold text-emerald-200/80">{size}</p>
                                         <p className="text-xl font-black text-lime-200 mt-1">{stockBreakdown[size] || 0}</p>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Sales History for Outfits */}
+                    {item.type === 'outfit' && salesHistory.length > 0 && (
+                        <div className="space-y-3">
+                            <h4 className="text-sm font-bold tracking-wide uppercase text-emerald-100">Sales History</h4>
+                            <div className="space-y-2 max-h-64 overflow-y-auto">
+                                {salesHistory.map((order, idx) => (
+                                    <div key={idx} className="p-3 rounded-xl border border-lime-600/40 bg-lime-900/20">
+                                        <div className="flex justify-between items-start gap-2 mb-1">
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-xs font-bold text-lime-200">Order #{order.orderNumber}</p>
+                                                <p className="text-xs text-lime-100/80 truncate">{order.customerName}</p>
+                                            </div>
+                                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full whitespace-nowrap ${
+                                                order.status === 'Delivered' ? 'bg-green-500/40 text-green-200' :
+                                                order.status === 'In Transit' ? 'bg-blue-500/40 text-blue-200' :
+                                                'bg-lime-500/40 text-lime-200'
+                                            }`}>
+                                                {order.status === 'Order Shipped (Completed)' ? '📦 Shipped' : 
+                                                 order.status === 'In Transit' ? '🚚 Transit' : '✅ Delivered'}
+                                            </span>
+                                        </div>
+                                        <div className="grid grid-cols-3 gap-2 text-xs">
+                                            <div>
+                                                <p className="text-lime-200/60 font-semibold">Qty</p>
+                                                <p className="text-white font-bold">{order.quantity || 1} {order.size || ''}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-lime-200/60 font-semibold">Price</p>
+                                                <p className="text-white font-bold">₹{order.finalSellingPrice || order.sellingPrice || 0}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-lime-200/60 font-semibold">Date</p>
+                                                <p className="text-white font-bold text-[10px]">
+                                                    {order.createdAt ? 
+                                                        (order.createdAt.toDate ? order.createdAt.toDate() : new Date(order.createdAt))
+                                                            .toLocaleDateString('en-IN', { month: 'short', day: '2-digit' })
+                                                        : 'N/A'}
+                                                </p>
+                                            </div>
+                                        </div>
                                     </div>
                                 ))}
                             </div>

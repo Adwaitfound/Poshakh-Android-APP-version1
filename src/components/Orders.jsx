@@ -1,10 +1,15 @@
 import React, { useState, useMemo } from 'react'
-import { Scissors, Clipboard, X, Trash2, Truck, Package, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react'
+import { Scissors, Clipboard, X, Trash2, Truck, Package, AlertCircle, ChevronDown, ChevronUp, Download, DollarSign, TrendingUp, Clock, Camera } from 'lucide-react'
 import { getDb } from '../firebase'
-import { collection, addDoc, serverTimestamp, updateDoc, doc, increment } from 'firebase/firestore'
+import { collection, addDoc, serverTimestamp, updateDoc, doc, increment, getDocs, query, where } from 'firebase/firestore'
 import { FABRICS_COLLECTION, ORDERS_COLLECTION, parsePrice, formatCurrency } from '../lib/utils'
 import { useNotification } from '../context/NotificationProvider'
 import { logOrderCreated, logOrderStatusChanged, logStockAdjusted } from '../lib/notificationLogger'
+import BarcodeScanner from './BarcodeScanner'
+import BarcodeDataReviewModal from './BarcodeDataReviewModal'
+import BatchScanQueue from './BatchScanQueue'
+import { parseBarcodeData } from '../lib/barcodeParser'
+
 
 export default function Orders({
     allOrders = [],
@@ -21,15 +26,24 @@ export default function Orders({
     onCancelBatch,
     onDataChanged
 }) {
-    const [stockOrderForm, setStockOrderForm] = useState({ orderNumber: '', outfitId: '', size: 'M', quantity: '1', customerName: '', phone: '', address: '', sellingPrice: '', stitchingCost: '', fabricCost: '', productionCost: '', platform: 'Shopify' })
-    const [scanInput, setScanInput] = useState('')
-    const [scanStatus, setScanStatus] = useState(null) // 'found', 'notfound', null
+    const [stockOrderForm, setStockOrderForm] = useState({ orderNumber: '', invoiceNumber: '', outfitId: '', size: 'M', quantity: '1', customerName: '', phone: '', address: '', sellingPrice: '', stitchingCost: '', fabricCost: '', productionCost: '', platform: 'Shopify' })
     const [orderFilterStatus, setOrderFilterStatus] = useState('active')
     const [orderSort, setOrderSort] = useState('date_desc')
+    const [orderSearch, setOrderSearch] = useState('')
+    const [orderDateRange, setOrderDateRange] = useState('30d') // 7d | 30d | all
+    const [quickStatusFilter, setQuickStatusFilter] = useState('') // '' | 'pending' | 'ready' | 'shipped' | 'cod'
+    const [platformFilter, setPlatformFilter] = useState('') // '' | 'shopify' | 'shopdeck'
     const [isUploading, setIsUploading] = useState(false)
     const [expandedSections, setExpandedSections] = useState({ batches: true, stock: false })
     const [selectedOrders, setSelectedOrders] = useState(new Set())
     const [deleteConfirm, setDeleteConfirm] = useState(null)
+    const [showBarcodeScanner, setShowBarcodeScanner] = useState(false)
+    const [showBarcodeReview, setShowBarcodeReview] = useState(false)
+    const [barcodeReviewData, setBarcodeReviewData] = useState(null)
+    const [batchMode, setBatchMode] = useState(false)
+    const [scanQueue, setScanQueue] = useState([])
+    const [currentQueueIndex, setCurrentQueueIndex] = useState(0)
+    const [isProcessingQueue, setIsProcessingQueue] = useState(false)
     const { notify } = useNotification()
 
     // Multi-select helpers
@@ -72,80 +86,11 @@ export default function Orders({
         return Number.isNaN(d.getTime()) ? null : d
     }
 
-    // Handle barcode/AWB scan to prefill order form
-    const handleScanOrder = async (e) => {
-        e.preventDefault()
-        if (!scanInput.trim()) return
 
-        const searchTerm = scanInput.trim()
-        setScanStatus(null)
 
-        try {
-            // First try: search local orders by orderNumber or trackingNumber
-            const matchedOrder = allOrders.find(o => 
-                (o.orderNumber && o.orderNumber.toString() === searchTerm) ||
-                (o.trackingNumber && o.trackingNumber === searchTerm)
-            )
 
-            if (matchedOrder) {
-                // Prefill form with matched order data
-                const outfit = inventoryItems.find(i => i.id === matchedOrder.outfitId || i.name === matchedOrder.outfitName)
-                setStockOrderForm(prev => ({
-                    ...prev,
-                    orderNumber: matchedOrder.orderNumber || prev.orderNumber,
-                    outfitId: outfit?.id || prev.outfitId,
-                    customerName: matchedOrder.customerName || prev.customerName,
-                    phone: matchedOrder.phone || prev.phone,
-                    address: matchedOrder.address || prev.address,
-                    platform: matchedOrder.platform || 'Shopify',
-                    size: matchedOrder.size || 'M',
-                    quantity: matchedOrder.quantity?.toString() || '1'
-                }))
-                setScanStatus('found')
-                setScanInput('')
-                setTimeout(() => setScanStatus(null), 2000)
-                return
-            }
 
-            // Second try: fetch from Shiprocket by AWB (assume numeric scan is an AWB)
-            if (/^\d+$/.test(searchTerm)) {
-                try {
-                    const resp = await fetch(`http://localhost:3001/api/shiprocket/order?awb=${searchTerm}`)
-                    if (resp.ok) {
-                        const shippingData = await resp.json()
-                        
-                        // Auto-fill from Shiprocket data
-                        const outfit = inventoryItems.length > 0 ? inventoryItems[0] : null
-                        setStockOrderForm(prev => ({
-                            ...prev,
-                            orderNumber: shippingData.orderNumber || shippingData.awb || prev.orderNumber,
-                            outfitId: outfit?.id || prev.outfitId,
-                            customerName: shippingData.customerName || prev.customerName,
-                            phone: shippingData.phone || prev.phone,
-                            address: shippingData.address?.line1 || prev.address,
-                            platform: shippingData.platform || 'Unknown',
-                            size: prev.size,
-                            quantity: '1'
-                        }))
-                        setScanStatus('found')
-                        setScanInput('')
-                        setTimeout(() => setScanStatus(null), 2000)
-                        return
-                    }
-                } catch (err) {
-                    console.warn('Shiprocket lookup failed:', err)
-                    // Fall through to notfound
-                }
-            }
 
-            // Not found in local orders or Shiprocket
-            setScanStatus('notfound')
-            setTimeout(() => setScanStatus(null), 2000)
-        } catch (error) {
-            console.error('Scan error:', error)
-            setScanStatus('notfound')
-        }
-    }
 
     // Helper to get COD remittance date
     const getCodRemittanceDate = (order) => {
@@ -229,16 +174,110 @@ export default function Orders({
         }
     }, [outfitCostData, selectedOutfit?.sellingPrice])
 
+    // Auto-generate Shopdeck order number when platform is Shopdeck
+    React.useEffect(() => {
+        if (stockOrderForm.platform === 'Shopdeck' && !stockOrderForm.orderNumber) {
+            setStockOrderForm(prev => ({
+                ...prev,
+                orderNumber: 'Shpdck18'
+            }))
+        }
+    }, [stockOrderForm.platform])
+
+    // Calculate order metrics
+    const orderMetrics = useMemo(() => {
+        const activeOrders = allOrders.filter(o => o.status !== 'Imported' && o.status !== 'Cancelled' && o.status !== 'Order Shipped (Completed)' && o.status !== 'In Transit' && o.status !== 'Delivered')
+        const completedOrders = allOrders.filter(o => o.status === 'Order Shipped (Completed)' || o.status === 'In Transit' || o.status === 'Delivered')
+        
+        const shopifyOrders = allOrders.filter(o => {
+            const platform = o.platform || 'Shopify'
+            const normalized = (platform === 'Shopodeck' || platform === 'Shopdeck') ? 'Shopdeck' : 'Shopify'
+            return normalized === 'Shopify' && o.status !== 'Imported'
+        }).length
+        
+        const shopdeckOrders = allOrders.filter(o => {
+            const platform = o.platform || 'Shopify'
+            const normalized = (platform === 'Shopodeck' || platform === 'Shopdeck') ? 'Shopdeck' : 'Shopify'
+            return normalized === 'Shopdeck' && o.status !== 'Imported'
+        }).length
+        
+        const pendingShipments = allOrders.filter(o => o.status === 'Ready to Ship' || o.status === 'Received from Tailor').length
+        const codPending = allOrders.filter(o => {
+            const paymentMethod = o.paymentMethod || o.paymentMode || 'Prepaid'
+            const isShipped = o.status === 'Order Shipped (Completed)' || o.status === 'In Transit' || o.status === 'Delivered'
+            if (paymentMethod !== 'COD' || !isShipped) return false
+            const remittanceDate = getCodRemittanceDate(o)
+            return remittanceDate > new Date()
+        }).length
+        
+        return {
+            totalActive: activeOrders.length,
+            totalCompleted: completedOrders.length,
+            shopifyOrders,
+            shopdeckOrders,
+            pendingShipments,
+            codPending
+        }
+    }, [allOrders])
+
     const filteredOrders = useMemo(() => {
         let list = [...allOrders]
         list = list.filter(o => o.status !== 'Imported')
 
-        if (orderFilterStatus === 'active') {
-            list = list.filter(o => o.status !== 'Cancelled' && o.status !== 'Order Shipped (Completed)')
-        } else if (orderFilterStatus === 'completed') {
-            list = list.filter(o => o.status === 'Order Shipped (Completed)' || o.status === 'Cancelled')
+        // Quick status filter
+        if (quickStatusFilter === 'pending') {
+            list = list.filter(o => o.status === 'Sent to Tailor')
+        } else if (quickStatusFilter === 'ready') {
+            list = list.filter(o => o.status === 'Ready to Ship' || o.status === 'Received from Tailor')
+        } else if (quickStatusFilter === 'shipped') {
+            list = list.filter(o => o.status === 'Order Shipped (Completed)' || o.status === 'In Transit' || o.status === 'Delivered')
+        } else if (quickStatusFilter === 'cod') {
+            list = list.filter(o => {
+                const paymentMethod = o.paymentMethod || o.paymentMode || 'Prepaid'
+                const isShipped = o.status === 'Order Shipped (Completed)' || o.status === 'In Transit' || o.status === 'Delivered'
+                if (paymentMethod !== 'COD' || !isShipped) return false
+                return true
+            })
         }
 
+        // Date range filter
+        if (orderDateRange !== 'all') {
+            const now = Date.now()
+            const windowMs = orderDateRange === '7d' ? 7*24*60*60*1000 : 30*24*60*60*1000
+            list = list.filter(o => {
+                const ts = o.createdAt?.toMillis ? o.createdAt.toMillis() : (o.createdAt ? new Date(o.createdAt).getTime() : 0)
+                return ts >= now - windowMs
+            })
+        }
+
+        // Status filter
+        if (orderFilterStatus === 'active') {
+            list = list.filter(o => o.status !== 'Cancelled' && o.status !== 'Order Shipped (Completed)' && o.status !== 'In Transit' && o.status !== 'Delivered')
+        } else if (orderFilterStatus === 'completed') {
+            list = list.filter(o => o.status === 'Order Shipped (Completed)' || o.status === 'In Transit' || o.status === 'Delivered' || o.status === 'Cancelled')
+        }
+
+        // Platform filter
+        if (platformFilter) {
+            list = list.filter(o => {
+                const platform = o.platform || 'Shopify'
+                const normalized = (platform === 'Shopodeck' || platform === 'Shopdeck') ? 'shopdeck' : 'shopify'
+                return normalized === platformFilter
+            })
+        }
+
+        // Text search
+        if (orderSearch.trim()) {
+            const q = orderSearch.trim().toLowerCase()
+            list = list.filter(o =>
+                String(o.orderNumber || '').toLowerCase().includes(q) ||
+                String(o.customerName || '').toLowerCase().includes(q) ||
+                String(o.phone || '').toLowerCase().includes(q) ||
+                String(o.outfitName || '').toLowerCase().includes(q)
+            )
+        }
+
+        // Sort
         list.sort((a, b) => {
             const dateA = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0
             const dateB = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0
@@ -247,7 +286,44 @@ export default function Orders({
             return 0
         })
         return list
-    }, [allOrders, orderFilterStatus, orderSort])
+    }, [allOrders, orderFilterStatus, orderSort, orderSearch, orderDateRange, quickStatusFilter, platformFilter])
+
+    // Export orders to CSV
+    const exportOrders = () => {
+        if (filteredOrders.length === 0) {
+            notify.error('No orders to export')
+            return
+        }
+        
+        const headers = ['Order No', 'Date', 'Customer', 'Phone', 'Outfit', 'Size', 'Qty', 'Status', 'Platform', 'Selling Price', 'Production Cost', 'Profit', 'Payment Method']
+        const rows = filteredOrders.map(o => [
+            o.orderNumber || '',
+            parseDate(o.createdAt)?.toLocaleDateString('en-IN') || '',
+            o.customerName || '',
+            o.phone || '',
+            o.outfitName || '',
+            o.size || '',
+            o.quantity || 1,
+            o.status || '',
+            o.platform || '',
+            parseFloat(o.finalSellingPrice || o.sellingPrice || 0),
+            parseFloat(o.productionCostPerPiece || 0) * (o.quantity || 1),
+            (parseFloat(o.finalSellingPrice || o.sellingPrice || 0) - parseFloat(o.productionCostPerPiece || 0) * (o.quantity || 1)),
+            o.paymentMethod || o.paymentMode || 'Prepaid'
+        ])
+        
+        const csv = [headers, ...rows].map(row => row.map(cell => `"${cell}"`).join(',')).join('\n')
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `orders_${new Date().toISOString().split('T')[0]}.csv`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+        notify.success(`Exported ${filteredOrders.length} orders`)
+    }
 
     const handleQuickReceive = async (orderId) => {
         const order = allOrders.find(o => o.id === orderId)
@@ -330,6 +406,143 @@ export default function Orders({
         }
     }
 
+    // ===== BARCODE SCANNING HANDLERS =====
+    const handleBarcodeScanned = (rawBarcodeData) => {
+        try {
+            // Parse the barcode data
+            const parsed = parseBarcodeData(rawBarcodeData)
+            console.log('Parsed barcode data:', parsed)
+            
+            if (batchMode) {
+                // Add to queue instead of showing review immediately
+                setScanQueue(prev => [...prev, parsed])
+                notify.success(`✓ Scanned: ${parsed.orderNumber || 'Order ' + (scanQueue.length + 1)}`)
+            } else {
+                // Original behavior - show review modal
+                setBarcodeReviewData(parsed)
+                setShowBarcodeReview(true)
+                setShowBarcodeScanner(false)
+            }
+        } catch (error) {
+            console.error('Barcode parsing error:', error)
+            notify.error('Failed to parse barcode: ' + error.message)
+        }
+    }
+
+    const handleQueuedOrderReview = (index) => {
+        setCurrentQueueIndex(index)
+        setBarcodeReviewData(scanQueue[index])
+        setShowBarcodeReview(true)
+        setShowBarcodeScanner(false)
+    }
+
+    const handleDeleteQueuedOrder = (index) => {
+        setScanQueue(prev => prev.filter((_, i) => i !== index))
+        if (currentQueueIndex >= scanQueue.length - 1) {
+            setCurrentQueueIndex(Math.max(0, scanQueue.length - 2))
+        }
+    }
+
+    const handleExitBatchMode = () => {
+        setScanQueue([])
+        setCurrentQueueIndex(0)
+        setBatchMode(false)
+        setShowBarcodeScanner(false)
+        notify.info('Exited batch scan mode')
+    }
+
+    const handleQueuedOrderConfirm = (reviewedData) => {
+        try {
+            // Auto-fill the order form with confirmed data
+            const { orderNumber, invoiceNumber, customerName, phone, address, totalPrice, items, matchedOutfit } = reviewedData
+            
+            // Extract selling price from total price
+            const sellingPrice = totalPrice ? totalPrice.replace(/[^\d.]/g, '') : ''
+            
+            // Get size from first item
+            const size = (items && items[0] && items[0].size) ? items[0].size : 'M'
+            const quantity = (items && items[0] && items[0].quantity) ? items[0].quantity : 1
+            
+            // Auto-fill form
+            setStockOrderForm(prev => ({
+                ...prev,
+                orderNumber: orderNumber || prev.orderNumber,
+                invoiceNumber: invoiceNumber || prev.invoiceNumber,
+                customerName: customerName || prev.customerName,
+                phone: phone || prev.phone,
+                address: address || prev.address,
+                size: size || prev.size,
+                quantity: quantity.toString() || prev.quantity,
+                sellingPrice: sellingPrice || prev.sellingPrice,
+                outfitId: matchedOutfit?.id || prev.outfitId // Auto-fill outfit if matched
+            }))
+            
+            // Mark this order as reviewed and auto-submit
+            setIsProcessingQueue(true)
+            setTimeout(() => {
+                // Trigger the form submit
+                const form = document.querySelector('[data-stock-order-form]')
+                if (form) {
+                    form.dispatchEvent(new Event('submit', { bubbles: true }))
+                }
+            }, 300)
+        } catch (error) {
+            console.error('Error confirming queued barcode data:', error)
+            notify.error('Failed to process order: ' + error.message)
+            setIsProcessingQueue(false)
+        }
+    }
+
+    const handleBarcodeDataConfirm = (reviewedData) => {
+        try {
+            // Auto-fill the order form with confirmed data
+            const { orderNumber, invoiceNumber, customerName, phone, address, totalPrice, items, matchedOutfit } = reviewedData
+            
+            // Extract selling price from total price
+            const sellingPrice = totalPrice ? totalPrice.replace(/[^\d.]/g, '') : ''
+            
+            // Get size from first item
+            const size = (items && items[0] && items[0].size) ? items[0].size : 'M'
+            const quantity = (items && items[0] && items[0].quantity) ? items[0].quantity : 1
+            
+            // Auto-fill form
+            setStockOrderForm(prev => ({
+                ...prev,
+                orderNumber: orderNumber || prev.orderNumber,
+                invoiceNumber: invoiceNumber || prev.invoiceNumber,
+                customerName: customerName || prev.customerName,
+                phone: phone || prev.phone,
+                address: address || prev.address,
+                size: size || prev.size,
+                quantity: quantity.toString() || prev.quantity,
+                sellingPrice: sellingPrice || prev.sellingPrice,
+                outfitId: matchedOutfit?.id || prev.outfitId // Auto-fill outfit if matched
+            }))
+            
+            if (batchMode) {
+                // In batch mode, auto-submit after form is filled
+                handleQueuedOrderConfirm(reviewedData)
+            } else {
+                // Normal mode - scroll to form and close modals
+                setShowBarcodeReview(false)
+                setBarcodeReviewData(null)
+                
+                notify.success('✓ Order form auto-filled from barcode')
+                
+                // Scroll to stock order section
+                setTimeout(() => {
+                    const element = document.querySelector('[data-stock-order-form]')
+                    if (element) {
+                        element.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                    }
+                }, 300)
+            }
+        } catch (error) {
+            console.error('Error confirming barcode data:', error)
+            notify.error('Failed to auto-fill form: ' + error.message)
+        }
+    }
+
     const handleStockOrderSubmit = async (e, keepCustomerInfo = false) => {
         e.preventDefault()
         const { orderNumber, outfitId, size, quantity, customerName, phone, address, fabricCost, stitchingCost, sellingPrice, productionCost, platform } = stockOrderForm
@@ -362,6 +575,40 @@ export default function Orders({
             const productionCostNum = parseFloat(productionCost) || outfit.productionCostPerPiece || 0
             const fabricCostNum = parseFloat(fabricCost) || 0
             const stitchingCostNum = parseFloat(stitchingCost) || 0
+            
+            // Create or update customer record
+            if (customerName && phone) {
+                try {
+                    const customersRef = collection(db, 'customers')
+                    const q = query(customersRef, where('phone', '==', phone))
+                    const existingCustomers = await getDocs(q)
+                    
+                    const customerData = {
+                        name: customerName,
+                        phone,
+                        address: address || '',
+                        lastOrderDate: serverTimestamp(),
+                        updatedAt: serverTimestamp()
+                    }
+                    
+                    if (existingCustomers.size > 0) {
+                        // Update existing customer
+                        const customerId = existingCustomers.docs[0].id
+                        await updateDoc(doc(db, 'customers', customerId), customerData)
+                        console.log('✅ Customer updated:', customerName)
+                    } else {
+                        // Create new customer
+                        await addDoc(customersRef, {
+                            ...customerData,
+                            createdAt: serverTimestamp()
+                        })
+                        console.log('✅ New customer created:', customerName)
+                    }
+                } catch (error) {
+                    console.error('Error creating/updating customer:', error)
+                    // Don't block order creation if customer creation fails
+                }
+            }
             
             await addDoc(collection(db, ORDERS_COLLECTION), {
                 orderNumber,
@@ -424,10 +671,30 @@ export default function Orders({
                 notify.success(`✅ Order #${orderNumber} created! ${qty}x ${outfit.name} (${size})`)
             }
 
+            // Handle batch mode - move to next order or exit
+            if (batchMode && isProcessingQueue) {
+                const nextIndex = currentQueueIndex + 1
+                if (nextIndex < scanQueue.length) {
+                    // More orders in queue - show next one
+                    setCurrentQueueIndex(nextIndex)
+                    setBarcodeReviewData(scanQueue[nextIndex])
+                    setShowBarcodeReview(true)
+                } else {
+                    // All orders completed
+                    setIsProcessingQueue(false)
+                    setScanQueue([])
+                    setCurrentQueueIndex(0)
+                    setBatchMode(false)
+                    setShowBarcodeReview(false)
+                    notify.success('🎉 All scanned orders completed!')
+                }
+            }
+
             if (onDataChanged) await onDataChanged()
         } catch (error) {
             console.error('Stock order error:', error)
             notify.error('Error creating order: ' + error.message)
+            setIsProcessingQueue(false)
         } finally {
             setIsUploading(false)
         }
@@ -462,7 +729,47 @@ export default function Orders({
     }
 
     return (
-        <div className="space-y-6 fade-in">{/* Production Batches Section */}
+        <div className="space-y-6 fade-in">
+            {/* Order Metrics Dashboard */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="bg-gradient-to-br from-emerald-700 to-emerald-900 p-4 rounded-2xl border border-lime-glow/40 shadow-lg">
+                    <div className="flex items-center justify-between mb-2">
+                        <Package className="w-5 h-5 text-lime-glow" />
+                        <span className="text-xs font-bold text-lime-glow/70">ACTIVE</span>
+                    </div>
+                    <p className="text-3xl font-black text-white">{orderMetrics.totalActive}</p>
+                    <p className="text-xs text-lime-glow/80 mt-1">Orders in progress</p>
+                </div>
+                
+                <div className="bg-gradient-to-br from-green-600 to-green-800 p-4 rounded-2xl border border-green-400/40 shadow-lg">
+                    <div className="flex items-center justify-between mb-2">
+                        <Package className="w-5 h-5 text-green-100" />
+                        <span className="text-xs font-bold text-green-100/70">SHOPIFY</span>
+                    </div>
+                    <p className="text-3xl font-black text-white">{orderMetrics.shopifyOrders}</p>
+                    <p className="text-xs text-green-100/80 mt-1">🛍️ Shopify orders</p>
+                </div>
+                
+                <div className="bg-gradient-to-br from-purple-600 to-purple-800 p-4 rounded-2xl border border-purple-400/40 shadow-lg">
+                    <div className="flex items-center justify-between mb-2">
+                        <Package className="w-5 h-5 text-purple-100" />
+                        <span className="text-xs font-bold text-purple-100/70">SHOPDECK</span>
+                    </div>
+                    <p className="text-3xl font-black text-white">{orderMetrics.shopdeckOrders}</p>
+                    <p className="text-xs text-purple-100/80 mt-1">🏪 Shopdeck orders</p>
+                </div>
+                
+                <div className="bg-gradient-to-br from-amber-700 to-amber-900 p-4 rounded-2xl border border-amber-400/40 shadow-lg">
+                    <div className="flex items-center justify-between mb-2">
+                        <Clock className="w-5 h-5 text-amber-200" />
+                        <span className="text-xs font-bold text-amber-200/70">PENDING</span>
+                    </div>
+                    <p className="text-3xl font-black text-white">{orderMetrics.pendingShipments}</p>
+                    <p className="text-xs text-amber-200/80 mt-1">{orderMetrics.codPending} COD due</p>
+                </div>
+            </div>
+
+            {/* Production Batches Section */}
             {onCreateProductionBatch && (
                 <div className="bg-emerald-pine/10 p-5 rounded-3xl shadow-card border-2 border-emerald-pine">
                     <div className="flex justify-between items-start mb-3">
@@ -589,40 +896,49 @@ export default function Orders({
                         </h3>
                         <p className="text-sm text-emerald-100/80 mt-1">Fulfill customer orders from produced inventory</p>
                     </div>
-                    {expandedSections.stock ? <ChevronUp className="w-5 h-5 text-emerald-200" /> : <ChevronDown className="w-5 h-5 text-emerald-200" />}
+                    <div className="flex items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={(e) => {
+                                e.stopPropagation()
+                                setBatchMode(!batchMode)
+                                if (!batchMode) {
+                                    setShowBarcodeScanner(true)
+                                }
+                            }}
+                            className={`p-2 rounded-lg transition text-sm font-semibold flex items-center gap-1 ${
+                                batchMode
+                                    ? 'bg-amber-600 hover:bg-amber-700 text-white'
+                                    : 'hover:bg-emerald-800/50 text-lime-glow hover:text-lime-300'
+                            }`}
+                            title={batchMode ? 'Exit batch mode' : 'Enable batch scanning'}
+                        >
+                            <Camera className="w-4 h-4" />
+                            <span className="hidden sm:inline text-xs">
+                                {batchMode ? `Batch (${scanQueue.length})` : 'Batch Scan'}
+                            </span>
+                        </button>
+                        <button
+                            type="button"
+                            onClick={(e) => {
+                                e.stopPropagation()
+                                setShowBarcodeScanner(true)
+                            }}
+                            className="p-2 hover:bg-emerald-800/50 rounded-lg transition text-lime-glow hover:text-lime-300 flex items-center gap-1 text-sm font-semibold"
+                            title="Scan QR code from packing slip"
+                        >
+                            <Camera className="w-4 h-4" />
+                            <span className="hidden sm:inline">Scan</span>
+                        </button>
+                        {expandedSections.stock ? <ChevronUp className="w-5 h-5 text-emerald-200" /> : <ChevronDown className="w-5 h-5 text-emerald-200" />}
+                    </div>
                 </div>
 
                 {expandedSections.stock && (
                     <>
-                        {/* Scan Order/AWB Section */}
-                        <form onSubmit={handleScanOrder} className="mb-4 bg-lime-glow/5 border border-lime-glow/30 p-4 rounded-2xl">
-                            <label className="text-xs font-bold text-lime-glow uppercase block mb-2">🔍 Scan Order Number / AWB</label>
-                            <div className="flex gap-2">
-                                <input
-                                    type="text"
-                                    value={scanInput}
-                                    onChange={e => setScanInput(e.target.value)}
-                                    placeholder="Scan barcode or type order number..."
-                                    autoFocus
-                                    className="flex-1 px-4 py-2 rounded-xl bg-white text-emerald-pine border-2 border-lime-glow font-semibold focus:outline-none focus:ring-2 focus:ring-lime-glow"
-                                />
-                                <button
-                                    type="submit"
-                                    className="px-4 py-2 bg-lime-glow text-emerald-pine rounded-xl font-bold hover:bg-lime-glow/90 transition-colors"
-                                >
-                                    Search
-                                </button>
-                            </div>
-                            {scanStatus === 'found' && (
-                                <p className="text-xs text-lime-300 mt-2">✅ Order found! Form prefilled.</p>
-                            )}
-                            {scanStatus === 'notfound' && (
-                                <p className="text-xs text-amber-300 mt-2">⚠️ Order not found. Use manual entry below.</p>
-                            )}
-                        </form>
 
                         {/* Main Order Form */}
-                        <form onSubmit={handleStockOrderSubmit} className="space-y-3">
+                        <form onSubmit={handleStockOrderSubmit} className="space-y-3" data-stock-order-form>
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div>
                                 <label className="text-xs font-bold text-emerald-100/80 uppercase">Order Number *</label>
@@ -635,6 +951,17 @@ export default function Orders({
                                 />
                             </div>
                             <div>
+                                <label className="text-xs font-bold text-emerald-100/80 uppercase">Invoice Number</label>
+                                <input
+                                    className="w-full px-4 py-3 rounded-xl mt-1 bg-emerald-900/70 text-lime-50 text-sm border border-lime-400/60 font-semibold placeholder-emerald-200/60 focus:outline-none focus:border-lime-200"
+                                    value={stockOrderForm.invoiceNumber || ''}
+                                    onChange={e => setStockOrderForm({ ...stockOrderForm, invoiceNumber: e.target.value })}
+                                    placeholder="e.g., 9096725484"
+                                />
+                            </div>
+                            </div>
+
+                            <div>
                                 <label className="text-xs font-bold text-emerald-100/80 uppercase">Platform *</label>
                                 <select
                                     className="w-full px-4 py-3 rounded-xl mt-1 bg-emerald-900/70 text-lime-50 text-sm border border-lime-400/60 font-semibold focus:outline-none focus:border-lime-200"
@@ -646,8 +973,12 @@ export default function Orders({
                                     <option value="Shopdeck">Shopdeck</option>
                                 </select>
                             </div>
+
                             <div>
-                                <label className="text-xs font-bold text-emerald-100/80 uppercase">Select Outfit *</label>
+                                <label className="text-xs font-bold text-emerald-100/80 uppercase flex items-center justify-between">
+                                    <span>Select Outfit *</span>
+                                    {selectedOutfit && <span className="text-[10px] text-lime-300 font-normal">{selectedOutfit.totalStock} pcs available</span>}
+                                </label>
                                 <select
                                     className="w-full px-4 py-3 rounded-xl mt-1 bg-emerald-900/70 text-lime-50 text-sm border border-lime-400/60 font-semibold focus:outline-none focus:border-lime-200"
                                     value={stockOrderForm.outfitId}
@@ -661,15 +992,16 @@ export default function Orders({
                                         </option>
                                     ))}
                                 </select>
+                                {outfitsWithStock.length === 0 && (
+                                    <p className="text-[10px] text-amber-300 mt-1">⚠️ No outfits in stock. Create production batches first.</p>
+                                )}
                             </div>
-                        </div>
-
-                        {selectedOutfit && (
+                            {selectedOutfit && (
                             <div className="bg-emerald-900/70 border border-emerald-700/60 p-3 rounded-xl">
                                 <p className="text-xs font-bold text-emerald-100 mb-2 uppercase">Available Stock</p>
                                 <div className="flex gap-2 flex-wrap">
                                     {['XS','S', 'M', 'L', 'XL', 'XXL'].map(size => {
-                                        const stock = parseInt(selectedOutfit.stockBreakdown?.[size]) || 0
+                                        const stock = parseInt(selectedOutfit?.stockBreakdown?.[size]) || 0
                                         if (stock === 0) return null
                                         return (
                                             <div key={size} className="px-3 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-lime-400/80 to-emerald-300/80 text-emerald-900 shadow">
@@ -679,11 +1011,18 @@ export default function Orders({
                                     })}
                                 </div>
                             </div>
-                        )}
+                            )}
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div>
-                                <label className="text-xs font-bold text-emerald-100/80 uppercase">Size *</label>
+                                <label className="text-xs font-bold text-emerald-100/80 uppercase flex items-center justify-between">
+                                    <span>Size *</span>
+                                    {selectedOutfit && stockOrderForm.size && (
+                                        <span className={`text-[10px] font-normal ${(parseInt(selectedOutfit.stockBreakdown?.[stockOrderForm.size]) || 0) < parseInt(stockOrderForm.quantity || 1) ? 'text-red-400' : 'text-lime-300'}`}>
+                                            {parseInt(selectedOutfit.stockBreakdown?.[stockOrderForm.size]) || 0} available
+                                        </span>
+                                    )}
+                                </label>
                                 <select
                                     className="w-full px-4 py-3 rounded-xl mt-1 bg-emerald-900/70 text-lime-50 text-sm border border-lime-400/60 font-semibold focus:outline-none focus:border-lime-200"
                                     value={stockOrderForm.size}
@@ -698,10 +1037,18 @@ export default function Orders({
                                 </select>
                             </div>
                             <div>
-                                <label className="text-xs font-bold text-emerald-100/80 uppercase">Quantity *</label>
+                                <label className="text-xs font-bold text-emerald-100/80 uppercase flex items-center justify-between">
+                                    <span>Quantity *</span>
+                                    {selectedOutfit && stockOrderForm.size && parseInt(stockOrderForm.quantity || 0) > 0 && (
+                                        <span className={`text-[10px] font-normal ${parseInt(stockOrderForm.quantity) > (parseInt(selectedOutfit.stockBreakdown?.[stockOrderForm.size]) || 0) ? 'text-red-400' : 'text-lime-300'}`}>
+                                            {parseInt(stockOrderForm.quantity) <= (parseInt(selectedOutfit.stockBreakdown?.[stockOrderForm.size]) || 0) ? '✓ In stock' : '⚠️ Insufficient stock'}
+                                        </span>
+                                    )}
+                                </label>
                                 <input
                                     type="number"
                                     min="1"
+                                    max={selectedOutfit ? (parseInt(selectedOutfit.stockBreakdown?.[stockOrderForm.size]) || 999) : 999}
                                     className="w-full px-4 py-3 rounded-xl mt-1 bg-emerald-900/70 text-lime-50 text-sm border border-lime-400/60 font-semibold placeholder-emerald-200/60 focus:outline-none focus:border-lime-200"
                                     value={stockOrderForm.quantity}
                                     onChange={e => setStockOrderForm({ ...stockOrderForm, quantity: e.target.value })}
@@ -838,20 +1185,118 @@ export default function Orders({
 
             {/* Order List */}
             <div>
-                <div className="flex justify-between items-end mb-3">
-                    <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                        <Clipboard className="w-5 h-5 text-lime-glow" /> Order History
-                    </h3>
-                    <div className="flex gap-2">
-                        <select className="text-xs bg-white border-2 border-lime-glow rounded-xl px-3 py-2 text-emerald-pine font-semibold shadow-md hover:shadow-lg" value={orderSort} onChange={e => setOrderSort(e.target.value)}>
-                            <option value="date_desc">Newest</option>
-                            <option value="date_asc">Oldest</option>
-                        </select>
-                        <select className="text-xs bg-white border-2 border-lime-glow rounded-xl px-3 py-2 text-emerald-pine font-semibold shadow-md hover:shadow-lg" value={orderFilterStatus} onChange={e => setOrderFilterStatus(e.target.value)}>
-                            <option value="active">Active Only</option>
-                            <option value="completed">Completed/Cancelled</option>
-                        </select>
+                <div className="mb-3 space-y-2">
+                    <div className="flex justify-between items-end">
+                        <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                            <Clipboard className="w-5 h-5 text-lime-glow" /> Order History
+                        </h3>
+                        <div className="hidden sm:flex gap-2">
+                            <button
+                                onClick={exportOrders}
+                                className="text-xs bg-white border-2 border-lime-glow rounded-xl px-3 py-2 text-emerald-pine font-semibold shadow-md hover:shadow-lg flex items-center gap-1"
+                                title="Export to CSV"
+                            >
+                                <Download className="w-3 h-3" />
+                                Export
+                            </button>
+                            <select className="text-xs bg-white border-2 border-lime-glow rounded-xl px-3 py-2 text-emerald-pine font-semibold shadow-md hover:shadow-lg" value={orderSort} onChange={e => setOrderSort(e.target.value)}>
+                                <option value="date_desc">Newest</option>
+                                <option value="date_asc">Oldest</option>
+                            </select>
+                            <select className="text-xs bg-white border-2 border-lime-glow rounded-xl px-3 py-2 text-emerald-pine font-semibold shadow-md hover:shadow-lg" value={orderFilterStatus} onChange={e => setOrderFilterStatus(e.target.value)}>
+                                <option value="active">Active Only</option>
+                                <option value="completed">Completed/Cancelled</option>
+                            </select>
+                        </div>
                     </div>
+                    
+                    {/* Quick Status Filter Chips */}
+                    <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+                        <button
+                            onClick={() => setQuickStatusFilter('')}
+                            className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all ${quickStatusFilter === '' ? 'bg-lime-glow text-emerald-pine shadow-md' : 'bg-emerald-pine/40 text-lime-glow border border-lime-glow/30'}`}
+                        >
+                            All
+                        </button>
+                        <button
+                            onClick={() => setQuickStatusFilter('pending')}
+                            className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all ${quickStatusFilter === 'pending' ? 'bg-amber-500 text-white shadow-md' : 'bg-emerald-pine/40 text-amber-300 border border-amber-400/30'}`}
+                        >
+                            🔨 Pending
+                        </button>
+                        <button
+                            onClick={() => setQuickStatusFilter('ready')}
+                            className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all ${quickStatusFilter === 'ready' ? 'bg-emerald-600 text-white shadow-md' : 'bg-emerald-pine/40 text-emerald-300 border border-emerald-400/30'}`}
+                        >
+                            📦 Ready to Ship
+                        </button>
+                        <button
+                            onClick={() => setQuickStatusFilter('shipped')}
+                            className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all ${quickStatusFilter === 'shipped' ? 'bg-lime-glow text-emerald-pine shadow-md' : 'bg-emerald-pine/40 text-lime-glow border border-lime-glow/30'}`}
+                        >
+                            ✅ Shipped
+                        </button>
+                        <button
+                            onClick={() => setQuickStatusFilter('cod')}
+                            className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all ${quickStatusFilter === 'cod' ? 'bg-orange-500 text-white shadow-md' : 'bg-emerald-pine/40 text-orange-300 border border-orange-400/30'}`}
+                        >
+                            💰 COD Pending
+                        </button>
+                    </div>
+                    
+                    {/* Platform Filter Chips */}
+                    <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+                        <button
+                            onClick={() => setPlatformFilter('')}
+                            className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all ${platformFilter === '' ? 'bg-white text-emerald-pine shadow-md' : 'bg-emerald-pine/40 text-white border border-white/30'}`}
+                        >
+                            All Platforms
+                        </button>
+                        <button
+                            onClick={() => setPlatformFilter('shopify')}
+                            className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all ${platformFilter === 'shopify' ? 'bg-green-500 text-white shadow-md' : 'bg-emerald-pine/40 text-green-300 border border-green-400/30'}`}
+                        >
+                            🛍️ Shopify
+                        </button>
+                        <button
+                            onClick={() => setPlatformFilter('shopdeck')}
+                            className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all ${platformFilter === 'shopdeck' ? 'bg-purple-500 text-white shadow-md' : 'bg-emerald-pine/40 text-purple-300 border border-purple-400/30'}`}
+                        >
+                            🏪 Shopdeck
+                        </button>
+                    </div>
+                    
+                    <div className="flex flex-col sm:flex-row gap-2">
+                        <input
+                            className="flex-1 px-3 py-2 rounded-xl bg-white text-emerald-pine text-sm border-2 border-lime-glow placeholder-emerald-700/50"
+                            placeholder="Search by order no, customer, phone, outfit"
+                            value={orderSearch}
+                            onChange={(e) => setOrderSearch(e.target.value)}
+                        />
+                        <div className="flex gap-2">
+                            <select className="text-xs bg-white border-2 border-lime-glow rounded-xl px-3 py-2 text-emerald-pine font-semibold shadow-md hover:shadow-lg sm:hidden" value={orderFilterStatus} onChange={e => setOrderFilterStatus(e.target.value)}>
+                                <option value="active">Active Only</option>
+                                <option value="completed">Completed/Cancelled</option>
+                            </select>
+                            <select className="text-xs bg-white border-2 border-lime-glow rounded-xl px-3 py-2 text-emerald-pine font-semibold shadow-md hover:shadow-lg" value={orderDateRange} onChange={e => setOrderDateRange(e.target.value)}>
+                                <option value="7d">Last 7 days</option>
+                                <option value="30d">Last 30 days</option>
+                                <option value="all">All time</option>
+                            </select>
+                            <select className="text-xs bg-white border-2 border-lime-glow rounded-xl px-3 py-2 text-emerald-pine font-semibold shadow-md hover:shadow-lg sm:hidden" value={orderSort} onChange={e => setOrderSort(e.target.value)}>
+                                <option value="date_desc">Newest</option>
+                                <option value="date_asc">Oldest</option>
+                            </select>
+                            <button
+                                onClick={exportOrders}
+                                className="sm:hidden text-xs bg-white border-2 border-lime-glow rounded-xl px-3 py-2 text-emerald-pine font-semibold shadow-md hover:shadow-lg flex items-center gap-1"
+                                title="Export to CSV"
+                            >
+                                <Download className="w-3 h-3" />
+                            </button>
+                        </div>
+                    </div>
+                    <div className="text-[11px] text-emerald-200/80">{filteredOrders.length} orders</div>
                 </div>
                 <div className="space-y-3">
                     {filteredOrders.length > 0 && (
@@ -881,6 +1326,8 @@ export default function Orders({
                     )}
                     {filteredOrders.map(order => {
                         const isSelected = selectedOrders.has(order.id)
+                        const profit = (parseFloat(order.finalSellingPrice || order.sellingPrice || 0) - parseFloat(order.productionCostPerPiece || 0) * (order.quantity || 1))
+                        const profitPerPiece = (parseFloat(order.finalSellingPrice || order.sellingPrice || 0) - parseFloat(order.productionCostPerPiece || 0))
                         return (
                             <div key={order.id} onClick={() => onViewOrder && onViewOrder(order)} className={`bg-emerald-pine/20 border-2 p-2 md:p-4 rounded-2xl shadow-card relative cursor-pointer transition-all ${isSelected ? 'border-blue-500 bg-blue-50/10' : 'border-lime-glow/40 hover:border-lime-glow/60'} ${order.status === 'Cancelled' ? 'opacity-60 grayscale' : ''}`}>
                             {/* Checkbox */}
@@ -893,12 +1340,12 @@ export default function Orders({
                                 }}
                                 className="absolute top-2 left-2 md:top-3 md:left-3 w-4 h-4 md:w-5 md:h-5 rounded border-2 border-lime-glow cursor-pointer flex-shrink-0 z-10"
                             />
-                            {order.status !== 'Cancelled' && order.status !== 'Order Shipped (Completed)' && (
+                            {order.status !== 'Cancelled' && order.status !== 'Order Shipped (Completed)' && order.status !== 'In Transit' && order.status !== 'Delivered' && (
                                 <button onClick={(e) => { e.stopPropagation(); onCancelOrder && onCancelOrder(order) }} className="absolute top-2 right-2 md:top-3 md:right-3 text-white/40 hover:text-red-500 z-20">
                                     <X className="w-4 h-4 md:w-5 md:h-5" />
                                 </button>
                             )}
-                            {(order.status === 'Cancelled' || order.status === 'Order Shipped (Completed)') && (
+                            {(order.status === 'Cancelled' || order.status === 'Order Shipped (Completed)' || order.status === 'In Transit' || order.status === 'Delivered') && (
                                 <button onClick={(e) => {
                                     e.stopPropagation();
                                     console.log('Delete button clicked for order:', order.id);
@@ -906,6 +1353,12 @@ export default function Orders({
                                 }} className="absolute bottom-2 right-2 md:bottom-3 md:right-3 text-white/40 hover:text-red-500 z-10 p-1">
                                     <Trash2 className="w-4 h-4 md:w-5 md:h-5" />
                                 </button>
+                            )}
+                            {/* Profit badge */}
+                            {order.status === 'Order Shipped (Completed)' && profitPerPiece !== 0 && (
+                                <div className={`absolute top-2 right-2 md:top-3 md:right-3 px-2 py-1 rounded-lg text-[9px] md:text-[10px] font-bold ${profitPerPiece > 0 ? 'bg-green-600/90 text-white' : 'bg-red-600/90 text-white'}`}>
+                                    {profitPerPiece > 0 ? '+' : ''}{formatCurrency(profit, 0)}
+                                </div>
                             )}
                             {/* Main content - 2 rows on mobile */}
                             <div className="flex gap-2 md:gap-3 mt-1">
@@ -933,11 +1386,27 @@ export default function Orders({
                                             </span>
                                         )}
                                     </div>
-                                    {/* Status badge */}
-                                    <div className="mb-0.5 md:mb-1">
-                                        <span className={`text-[8px] md:text-[10px] font-bold px-1.5 md:px-2 py-0.5 rounded border inline-block ${order.status === 'Sent to Tailor' ? 'bg-amber-600/80 text-white border-amber-500' : order.status === 'Ready to Ship' ? 'bg-emerald-700/80 text-white border-emerald-600' : order.status.includes('Shipped') ? 'bg-lime-glow/20 text-lime-glow border-lime-glow/50' : 'bg-gray-700 text-white border-gray-600'}`}>
+                                    {/* Status + date + COD badge */}
+                                    <div className="mb-0.5 md:mb-1 flex items-center gap-1 md:gap-2 flex-wrap">
+                                        <span className={`text-[8px] md:text-[10px] font-bold px-1.5 md:px-2 py-0.5 rounded border inline-block ${order.status === 'Sent to Tailor' ? 'bg-amber-600/80 text-white border-amber-500' : order.status === 'Ready to Ship' ? 'bg-emerald-700/80 text-white border-emerald-600' : order.status === 'In Transit' ? 'bg-blue-600/80 text-white border-blue-500' : order.status === 'Delivered' ? 'bg-green-600/80 text-white border-green-500' : order.status.includes('Shipped') ? 'bg-lime-glow/20 text-lime-glow border-lime-glow/50' : order.status === 'Cancelled' ? 'bg-red-700/70 text-white border-red-600' : 'bg-gray-700 text-white border-gray-600'}`}>
                                             {order.status}
                                         </span>
+                                        {(() => {
+                                            const created = parseDate(order.createdAt)
+                                            return created ? (
+                                                <span className="text-[8px] md:text-[10px] px-1.5 py-0.5 rounded border border-emerald-700/60 bg-emerald-900/50 text-emerald-100 whitespace-nowrap">
+                                                    {created.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                                                </span>
+                                            ) : null
+                                        })()}
+                                        {(() => {
+                                            const cod = getCodCountdown(order)
+                                            return cod ? (
+                                                <span className={`text-[8px] md:text-[10px] font-bold px-1.5 md:px-2 py-0.5 rounded border ${cod.color}`}>
+                                                    {cod.text}
+                                                </span>
+                                            ) : null
+                                        })()}
                                     </div>
                                     {/* Outfit name and size - condensed */}
                                     <h4 className="font-bold text-white text-xs md:text-sm leading-tight">
@@ -1010,6 +1479,41 @@ export default function Orders({
                     </div>
                 </div>
             )}
+
+
+            {/* Barcode Scanner Modal */}
+            <BarcodeScanner
+                visible={showBarcodeScanner}
+                onScanned={handleBarcodeScanned}
+                onClose={() => setShowBarcodeScanner(false)}
+                batchMode={batchMode}
+                scannedCount={scanQueue.length}
+            />
+
+            {/* Barcode Data Review Modal */}
+            <BarcodeDataReviewModal
+                visible={showBarcodeReview}
+                data={barcodeReviewData}
+                inventoryItems={inventoryItems}
+                onConfirm={handleBarcodeDataConfirm}
+                onCancel={() => {
+                    setShowBarcodeReview(false)
+                    setBarcodeReviewData(null)
+                }}
+            />
+
+            {/* Batch Scan Queue */}
+            {batchMode && scanQueue.length > 0 && (
+                <BatchScanQueue
+                    queue={scanQueue}
+                    currentIndex={currentQueueIndex}
+                    onReviewItem={handleQueuedOrderReview}
+                    onDeleteItem={handleDeleteQueuedOrder}
+                    onExitBatchMode={handleExitBatchMode}
+                    isProcessing={isProcessingQueue}
+                />
+            )}
+
             </div>
         </div>
     )

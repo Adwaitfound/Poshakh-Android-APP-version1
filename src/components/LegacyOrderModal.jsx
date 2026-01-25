@@ -251,6 +251,8 @@ export default function LegacyOrderModal({ visible, inventoryItems = [], userPro
                                 <option>Sent to Tailor</option>
                                 <option>Received from Tailor</option>
                                 <option>Order Shipped (Completed)</option>
+                                <option>In Transit</option>
+                                <option>Delivered</option>
                                 <option>Cancelled</option>
                             </select>
                             <select className="w-full p-2 bg-gray-800 text-white rounded-lg border-2 border-lime-glow/40 text-sm mb-2" value={form.paymentMethod} onChange={e => setForm({ ...form, paymentMethod: e.target.value })}>

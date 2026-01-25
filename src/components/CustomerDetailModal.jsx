@@ -66,7 +66,11 @@ export default function CustomerDetailModal({ customer, onClose, allOrders = [],
         const totalSpent = customerOrders.reduce((sum, order) => sum + getOrderCost(order), 0)
         const totalOrders = customerOrders.length
         const avgOrderValue = totalOrders > 0 ? totalSpent / totalOrders : 0
-        const completedOrders = customerOrders.filter(o => o.status === 'Order Shipped (Completed)').length
+        const completedOrders = customerOrders.filter(o => 
+            o.status === 'Order Shipped (Completed)' || 
+            o.status === 'In Transit' || 
+            o.status === 'Delivered'
+        ).length
 
         return { totalSpent, totalOrders, avgOrderValue, completedOrders }
     }, [customerOrders])

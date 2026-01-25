@@ -17,7 +17,9 @@ export default function Inventory({
     }
 
     const getSoldCount = (item) => {
-        return soldCounts[item.id] ?? soldCounts[item.name] ?? 0
+        const fromCounts = soldCounts[item.id] ?? soldCounts[item.name] ?? 0
+        const manualCount = parseInt(item.manualSoldCount) || 0
+        return fromCounts + manualCount
     }
 
     const inventoryList = useMemo(() => {
