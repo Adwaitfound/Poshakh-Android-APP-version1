@@ -17,11 +17,14 @@ export default function BatchScanQueue({
     const totalCount = queue.length
 
     return (
-        <div className="fixed inset-0 bg-black/80 z-50 flex items-end sm:items-center justify-center">
-            <div className="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full sm:max-w-lg sm:mx-4 max-h-[85vh] sm:max-h-[600px] flex flex-col safe-bottom">
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+            <div className="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full sm:max-w-lg max-h-[90vh] sm:max-h-[85vh] flex flex-col overflow-hidden safe-bottom">
                 <style>{`
+                    body { overflow: hidden; }
                     .safe-bottom {
                         padding-bottom: env(safe-area-inset-bottom);
+                        display: flex;
+                        flex-direction: column;
                     }
                 `}</style>
                 {/* Header */}

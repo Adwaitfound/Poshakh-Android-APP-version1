@@ -103,9 +103,13 @@ export default function BarcodeDataReviewModal({ visible, data, inventoryItems =
   if (!visible || !editedData) return null
 
   return (
-    <div className="fixed inset-0 bg-black/80 z-[75] flex items-end sm:items-center justify-center modal-enter backdrop-blur-sm">
-      <div className="bg-gray-950 w-full sm:max-w-2xl sm:mx-4 rounded-t-3xl sm:rounded-3xl shadow-2xl max-h-[92vh] sm:max-h-[85vh] overflow-hidden flex flex-col border border-lime-glow/40">
+    <div className="fixed inset-0 bg-black/80 z-[75] flex items-end sm:items-center justify-center p-0 sm:p-4 overflow-hidden">
+      <div className="bg-gray-950 w-full sm:max-w-2xl rounded-t-3xl sm:rounded-3xl shadow-2xl max-h-[95vh] sm:max-h-[90vh] overflow-hidden flex flex-col border border-lime-glow/40 safe-area-modal">
         <style>{`
+          body { overflow: hidden; }
+          .safe-area-modal {
+            padding-bottom: env(safe-area-inset-bottom);
+          }
           .modal-enter {
             animation: slideUp 0.3s ease-out;
           }
@@ -122,6 +126,11 @@ export default function BarcodeDataReviewModal({ visible, data, inventoryItems =
           .touch-manipulation {
             touch-action: manipulation;
             -webkit-tap-highlight-color: transparent;
+          }
+          input, textarea {
+            font-size: 16px;
+            -webkit-appearance: none;
+            appearance: none;
           }
         `}</style>
         

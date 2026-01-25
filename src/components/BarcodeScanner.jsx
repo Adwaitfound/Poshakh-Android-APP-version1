@@ -181,8 +181,21 @@ export default function BarcodeScanner({ visible, onScanned, onClose, batchMode 
   if (!visible) return null
 
   return (
-    <div className="fixed inset-0 bg-black z-[80] flex flex-col">
-      <div className="w-full h-full flex flex-col bg-gray-950">
+    <div className="fixed inset-0 bg-black z-[80] flex flex-col w-screen h-screen overflow-hidden">
+      <style>{`
+        body { overflow: hidden; }
+        .scanner-container {
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          width: 100vw;
+          height: 100vh;
+          z-index: 80;
+        }
+      `}</style>
+      <div className="w-screen h-screen flex flex-col bg-gray-950 overflow-hidden">
         {/* Header */}
         <div className="p-4 sm:p-5 bg-emerald-pine border-b border-lime-glow/40 flex justify-between items-center flex-shrink-0 safe-area-top">
           <style>{`
@@ -222,7 +235,6 @@ export default function BarcodeScanner({ visible, onScanned, onClose, batchMode 
             playsInline
             muted
             className="w-full h-full object-cover"
-            style={{ transform: 'scaleX(-1)' }}
           />
           <canvas
             ref={canvasRef}
