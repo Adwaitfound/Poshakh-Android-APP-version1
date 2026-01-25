@@ -103,28 +103,50 @@ export default function BarcodeDataReviewModal({ visible, data, inventoryItems =
   if (!visible || !editedData) return null
 
   return (
-    <div className="fixed inset-0 bg-black/70 z-[75] flex items-end sm:items-center justify-center modal-enter backdrop-blur-sm">
-      <div className="bg-gray-950 w-full sm:max-w-2xl rounded-t-3xl sm:rounded-3xl shadow-2xl max-h-[90vh] overflow-hidden flex flex-col border border-lime-glow/40">
+    <div className="fixed inset-0 bg-black/80 z-[75] flex items-end sm:items-center justify-center modal-enter backdrop-blur-sm">
+      <div className="bg-gray-950 w-full sm:max-w-2xl sm:mx-4 rounded-t-3xl sm:rounded-3xl shadow-2xl max-h-[92vh] sm:max-h-[85vh] overflow-hidden flex flex-col border border-lime-glow/40">
+        <style>{`
+          .modal-enter {
+            animation: slideUp 0.3s ease-out;
+          }
+          @keyframes slideUp {
+            from {
+              opacity: 0;
+              transform: translateY(100%);
+            }
+            to {
+              opacity: 1;
+              transform: translateY(0);
+            }
+          }
+          .touch-manipulation {
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+          }
+        `}</style>
         
         {/* Header */}
-        <div className="p-4 sm:p-6 bg-gradient-to-r from-emerald-pine to-emerald-900 border-b border-lime-glow/40 flex justify-between items-center flex-shrink-0">
-          <h3 className="text-lg sm:text-xl font-bold text-white">
-            Review Barcode Data
-          </h3>
+        <div className="p-5 sm:p-6 bg-gradient-to-r from-emerald-pine to-emerald-900 border-b border-lime-glow/40 flex justify-between items-start flex-shrink-0">
+          <div className="flex-1">
+            <div className="w-12 h-1 bg-white/30 rounded-full mb-3 sm:hidden"></div>
+            <h3 className="text-xl sm:text-lg font-bold text-white">
+              Review Barcode Data
+            </h3>
+          </div>
           <button
             onClick={onCancel}
-            className="p-2 hover:bg-white/10 rounded-full transition text-white"
+            className="p-2.5 sm:p-2 hover:bg-white/10 active:bg-white/20 rounded-full transition text-white touch-manipulation"
           >
-            <X className="w-5 h-5" />
+            <X className="w-6 h-6 sm:w-5 sm:h-5" />
           </button>
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
+        <div className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-4 overscroll-contain">
           
           {/* Info Message */}
           <div className="bg-blue-900/30 border border-blue-500/50 rounded-2xl p-4 flex gap-3">
-            <AlertCircle className="w-5 h-5 text-blue-300 flex-shrink-0 mt-0.5" />
+            <AlertCircle className="w-5 h-5 sm:w-4 sm:h-4 text-blue-300 flex-shrink-0 mt-0.5" />
             <p className="text-sm text-blue-100">
               Barcode data extracted. Please review and correct any errors before confirming.
             </p>
@@ -144,7 +166,7 @@ export default function BarcodeDataReviewModal({ visible, data, inventoryItems =
                   type="text"
                   value={editedData.orderNumber || ''}
                   onChange={e => handleFieldChange('orderNumber', e.target.value)}
-                  className={`w-full px-3 py-2 rounded-lg bg-emerald-900/50 border text-white text-sm focus:outline-none transition ${
+                  className={`w-full px-4 py-3 sm:py-2 text-base sm:text-sm rounded-xl sm:rounded-lg bg-emerald-900/50 border text-white focus:outline-none transition touch-manipulation ${
                     errors.orderNumber
                       ? 'border-red-500/70 focus:border-red-400'
                       : 'border-lime-glow/50 focus:border-lime-glow'
@@ -335,18 +357,23 @@ export default function BarcodeDataReviewModal({ visible, data, inventoryItems =
         </div>
 
         {/* Footer */}
-        <div className="p-4 sm:p-6 border-t border-lime-glow/40 bg-emerald-900/10 flex gap-3 flex-shrink-0">
-          <button
-            onClick={onCancel}
-            className="flex-1 px-4 py-2.5 rounded-lg bg-gray-800/50 hover:bg-gray-800 text-white font-bold text-sm transition"
-          >
-            Cancel
-          </button>
+        <div className="p-5 sm:p-6 border-t border-lime-glow/40 bg-emerald-900/10 flex flex-col sm:flex-row gap-3 flex-shrink-0 safe-area-bottom">
+          <style>{`
+            .safe-area-bottom {
+              padding-bottom: calc(env(safe-area-inset-bottom) + 1.25rem);
+            }
+          `}</style>
           <button
             onClick={handleConfirm}
-            className="flex-1 px-4 py-2.5 rounded-lg bg-lime-glow hover:bg-lime-300 text-emerald-900 font-bold text-sm transition"
+            className="flex-1 px-6 py-4 sm:py-3 rounded-xl sm:rounded-lg bg-lime-glow hover:bg-lime-300 active:bg-lime-400 text-emerald-900 font-bold text-base sm:text-sm transition touch-manipulation shadow-lg"
           >
-            Use This Data
+            ✓ Use This Data
+          </button>
+          <button
+            onClick={onCancel}
+            className="flex-1 px-6 py-4 sm:py-3 rounded-xl sm:rounded-lg bg-gray-800/50 hover:bg-gray-800 active:bg-gray-700 text-white font-bold text-base sm:text-sm transition touch-manipulation"
+          >
+            Cancel
           </button>
         </div>
       </div>

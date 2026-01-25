@@ -17,11 +17,17 @@ export default function BatchScanQueue({
     const totalCount = queue.length
 
     return (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-lg shadow-xl max-w-md w-full max-h-96 flex flex-col">
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-end sm:items-center justify-center">
+            <div className="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full sm:max-w-lg sm:mx-4 max-h-[85vh] sm:max-h-[600px] flex flex-col safe-bottom">
+                <style>{`
+                    .safe-bottom {
+                        padding-bottom: env(safe-area-inset-bottom);
+                    }
+                `}</style>
                 {/* Header */}
-                <div className="bg-blue-600 text-white p-4 rounded-t-lg">
-                    <h2 className="text-lg font-bold">Batch Scan Queue</h2>
+                <div className="bg-blue-600 text-white p-4 sm:p-5 rounded-t-3xl sm:rounded-t-2xl">
+                    <div className="w-12 h-1 bg-white/30 rounded-full mx-auto mb-3 sm:hidden"></div>
+                    <h2 className="text-xl sm:text-lg font-bold">Batch Scan Queue</h2>
                     <p className="text-sm mt-1">
                         {completedCount} of {totalCount} completed
                     </p>
@@ -34,11 +40,11 @@ export default function BatchScanQueue({
                 </div>
 
                 {/* Queue List */}
-                <div className="overflow-y-auto flex-1 p-4 space-y-2">
+                <div className="overflow-y-auto flex-1 p-4 sm:p-5 space-y-2 overscroll-contain">
                     {queue.map((item, index) => (
                         <div
                             key={index}
-                            className={`p-3 rounded-lg border-2 cursor-pointer transition-all ${
+                            className={`p-4 sm:p-3 rounded-xl border-2 cursor-pointer transition-all active:scale-98 ${
                                 index === currentIndex
                                     ? 'border-blue-500 bg-blue-50'
                                     : index < currentIndex
@@ -94,20 +100,20 @@ export default function BatchScanQueue({
                 </div>
 
                 {/* Footer */}
-                <div className="border-t p-4 flex gap-2 rounded-b-lg bg-gray-50">
-                    <button
-                        onClick={onExitBatchMode}
-                        className="flex-1 px-4 py-2 text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-100 font-medium text-sm transition-colors"
-                        disabled={isProcessing}
-                    >
-                        Exit Batch Mode
-                    </button>
+                <div className="border-t p-4 sm:p-5 flex flex-col sm:flex-row gap-3 sm:gap-2 bg-gray-50 rounded-b-3xl sm:rounded-b-2xl">
                     <button
                         onClick={() => onReviewItem(currentIndex)}
-                        className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium text-sm transition-colors disabled:opacity-50"
+                        className="flex-1 px-6 py-4 sm:py-3 bg-blue-600 text-white rounded-xl sm:rounded-lg hover:bg-blue-700 active:bg-blue-800 font-bold text-base sm:text-sm transition-colors disabled:opacity-50 touch-manipulation"
                         disabled={isProcessing || queue.length === 0}
                     >
                         Review Now
+                    </button>
+                    <button
+                        onClick={onExitBatchMode}
+                        className="flex-1 px-6 py-4 sm:py-3 text-gray-700 border-2 border-gray-300 rounded-xl sm:rounded-lg hover:bg-gray-100 active:bg-gray-200 font-bold text-base sm:text-sm transition-colors touch-manipulation"
+                        disabled={isProcessing}
+                    >
+                        Exit Batch Mode
                     </button>
                 </div>
             </div>

@@ -181,35 +181,46 @@ export default function BarcodeScanner({ visible, onScanned, onClose, batchMode 
   if (!visible) return null
 
   return (
-    <div className="fixed inset-0 bg-black/80 z-[80] flex items-center justify-center backdrop-blur-sm">
-      <div className="w-full sm:max-w-md rounded-3xl overflow-hidden shadow-2xl bg-gray-950 border border-lime-glow/40">
+    <div className="fixed inset-0 bg-black z-[80] flex flex-col">
+      <div className="w-full h-full flex flex-col bg-gray-950">
         {/* Header */}
-        <div className="p-4 bg-emerald-pine border-b border-lime-glow/40 flex justify-between items-center">
-          <div>
-            <h3 className="text-lg font-bold text-white flex items-center gap-2">
-              <Camera className="w-5 h-5" />
+        <div className="p-4 sm:p-5 bg-emerald-pine border-b border-lime-glow/40 flex justify-between items-center flex-shrink-0 safe-area-top">
+          <style>{`
+            .safe-area-top {
+              padding-top: calc(env(safe-area-inset-top) + 1rem);
+            }
+            @media (min-width: 640px) {
+              .safe-area-top {
+                padding-top: 1.25rem;
+              }
+            }
+          `}</style>
+          <div className="flex-1">
+            <h3 className="text-xl sm:text-lg font-bold text-white flex items-center gap-2">
+              <Camera className="w-6 h-6 sm:w-5 sm:h-5" />
               {batchMode ? 'Batch Scan Mode' : 'Scan QR Code'}
             </h3>
             {batchMode && scannedCount > 0 && (
-              <p className="text-xs text-lime-glow mt-1">
+              <p className="text-sm sm:text-xs text-lime-glow mt-1 font-semibold">
                 ✓ {scannedCount} scanned • Keep scanning or close to review
               </p>
             )}
           </div>
           <button
             onClick={handleClose}
-            className="p-2 hover:bg-white/10 rounded-full transition text-white"
+            className="p-3 sm:p-2 hover:bg-white/10 active:bg-white/20 rounded-full transition text-white touch-manipulation"
           >
-            <X className="w-5 h-5" />
+            <X className="w-6 h-6 sm:w-5 sm:h-5" />
           </button>
         </div>
 
         {/* Camera View */}
-        <div className="relative bg-black aspect-square overflow-hidden">
+        <div className="relative bg-black flex-1 overflow-hidden flex items-center justify-center">
           <video
             ref={videoRef}
             autoPlay
             playsInline
+            muted
             className="w-full h-full object-cover"
             style={{ transform: 'scaleX(-1)' }}
           />
@@ -270,8 +281,8 @@ export default function BarcodeScanner({ visible, onScanned, onClose, batchMode 
 
         {/* Manual Input Section */}
         {showManualInput && (
-          <div className="p-4 border-t border-lime-glow/40 bg-emerald-900/20 space-y-3">
-            <p className="text-sm text-emerald-100">
+          <div className="p-5 sm:p-4 border-t border-lime-glow/40 bg-emerald-900/20 space-y-3 safe-area-bottom">
+            <p className="text-base sm:text-sm text-emerald-100">
               Camera not available? Enter barcode manually:
             </p>
             <div className="flex gap-2">
@@ -281,14 +292,14 @@ export default function BarcodeScanner({ visible, onScanned, onClose, batchMode 
                 onChange={e => setManualInput(e.target.value)}
                 onKeyPress={e => e.key === 'Enter' && handleManualSubmit()}
                 placeholder="Paste barcode data here..."
-                className="flex-1 px-3 py-2 rounded-lg bg-emerald-900/50 border border-lime-glow/50 text-white placeholder-emerald-300/50 text-sm focus:outline-none focus:border-lime-glow"
+                className="flex-1 px-4 py-3 sm:px-3 sm:py-2 text-base sm:text-sm rounded-xl sm:rounded-lg bg-emerald-900/50 border border-lime-glow/50 text-white placeholder-emerald-300/50 focus:outline-none focus:border-lime-glow touch-manipulation"
                 autoFocus
               />
             </div>
             <button
               onClick={handleManualSubmit}
               disabled={!manualInput.trim()}
-              className="w-full px-4 py-2 bg-lime-glow text-emerald-900 font-bold rounded-lg hover:bg-lime-300 disabled:opacity-50 disabled:cursor-not-allowed transition text-sm"
+              className="w-full px-6 py-4 sm:px-4 sm:py-3 bg-lime-glow text-emerald-900 font-bold rounded-xl sm:rounded-lg hover:bg-lime-300 active:bg-lime-400 disabled:opacity-50 disabled:cursor-not-allowed transition text-base sm:text-sm touch-manipulation"
             >
               Use This Data
             </button>
@@ -296,14 +307,14 @@ export default function BarcodeScanner({ visible, onScanned, onClose, batchMode 
         )}
 
         {/* Instructions */}
-        {scanning && !error && (
-          <div className="p-4 bg-emerald-900/20 border-t border-lime-glow/40">
-            <p className="text-xs text-emerald-100 text-center">
-              Point camera at QR code. Scanner will auto-detect and close.
+        {scanning && !error && !showManualInput && (
+          <div className="p-5 sm:p-4 bg-emerald-900/20 border-t border-lime-glow/40 safe-area-bottom">
+            <p className="text-sm sm:text-xs text-emerald-100 text-center font-medium">
+              {batchMode ? 'Keep scanning QR codes or close when done' : 'Point camera at QR code. Auto-detects and closes.'}
             </p>
             <button
               onClick={() => setShowManualInput(true)}
-              className="w-full mt-2 px-3 py-2 text-xs text-lime-glow hover:text-lime-300 font-semibold underline"
+              className="w-full mt-3 sm:mt-2 px-4 py-3 sm:px-3 sm:py-2 text-sm sm:text-xs text-lime-glow hover:text-lime-300 active:text-lime-400 font-bold underline touch-manipulation"
             >
               Or enter manually
             </button>
