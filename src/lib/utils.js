@@ -1,6 +1,7 @@
 export const FABRICS_COLLECTION = 'fabrics'
 export const ORDERS_COLLECTION = 'production_orders'
 export const CUSTOMERS_COLLECTION = 'customers'
+export const SAMPLES_COLLECTION = 'samples'
 export const AVERAGE_SELLING_PRICE = 1200
 
 export const ALLOWED_USERS = [

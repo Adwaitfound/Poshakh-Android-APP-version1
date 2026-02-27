@@ -1,1 +1,4 @@
 node_modules
+backend/create-token.mjs
+backend/get-token-cli.mjs
+backend/get-token-from-cli.mjs

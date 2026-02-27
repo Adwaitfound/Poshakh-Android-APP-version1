@@ -31,9 +31,12 @@ import ReturnModal from './components/ReturnModal'
 import ImageModal from './components/ImageModal'
 import HistoryModal from './components/HistoryModal'
 import ChangeHistoryModal from './components/ChangeHistoryModal'
+import SampleInventory from './components/SampleInventory'
+import AddSampleModal from './components/AddSampleModal'
+import SampleDetailModal from './components/SampleDetailModal'
 import { getDb } from './firebase'
 import { collection, addDoc, serverTimestamp, updateDoc, doc, deleteDoc, getDocs, query, where, increment, onSnapshot } from 'firebase/firestore'
-import { FABRICS_COLLECTION, ORDERS_COLLECTION, cleanNumber, getOutfitTotal } from './lib/utils'
+import { FABRICS_COLLECTION, ORDERS_COLLECTION, SAMPLES_COLLECTION, cleanNumber, getOutfitTotal } from './lib/utils'
 
 // Simple icon SVG components
 const Icons = {
@@ -115,6 +118,9 @@ function InnerApp() {
     const [receiveBatch, setReceiveBatch] = useState(null)
     const [changeHistoryVisible, setChangeHistoryVisible] = useState(false)
     const [showMobileMenu, setShowMobileMenu] = useState(false)
+    const [sampleItems, setSampleItems] = useState([])
+    const [showAddSampleModal, setShowAddSampleModal] = useState(false)
+    const [viewSampleItem, setViewSampleItem] = useState(null)
     // Modal & UI state
     const [viewInventoryItem, setViewInventoryItem] = useState(null)
     const [viewOrder, setViewOrder] = useState(null)
@@ -279,6 +285,23 @@ function InnerApp() {
         }
     }
 
+    // Load samples once db is ready
+    React.useEffect(() => {
+        if (!db) return
+        loadSamples()
+    }, [db])
+
+    const loadSamples = async () => {
+        try {
+            const snap = await getDocs(collection(db, SAMPLES_COLLECTION))
+            const list = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(d => d && d.name)
+            setSampleItems(list)
+            console.log('Loaded', list.length, 'samples')
+        } catch (error) {
+            console.error('Error loading samples:', error)
+        }
+    }
+
     // Load production batches once db is ready
     React.useEffect(() => {
         if (!db) return
@@ -309,7 +332,172 @@ function InnerApp() {
     }
 
     const refreshAllData = async () => {
-        await Promise.all([loadInventory(), loadOrders(), loadProductionBatches(), loadVendors()])
+        await Promise.all([loadInventory(), loadOrders(), loadProductionBatches(), loadVendors(), loadSamples()])
+    }
+
+    // Sample handlers
+    const handleApproveSample = async (sample, note = '') => {
+        try {
+            const db = getDb()
+            await updateDoc(doc(db, SAMPLES_COLLECTION, sample.id), {
+                sampleStatus: 'approved',
+                approvalNote: note,
+                approvedBy: userProfile?.name || 'Unknown',
+                approvedAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+            })
+            setViewSampleItem(null)
+            await loadSamples()
+        } catch (e) {
+            console.error('Error approving sample:', e)
+            alert('Error approving sample: ' + e.message)
+        }
+    }
+
+    const handleRejectSample = async (sample, reason = '') => {
+        try {
+            const db = getDb()
+            await updateDoc(doc(db, SAMPLES_COLLECTION, sample.id), {
+                sampleStatus: 'rejected',
+                rejectionReason: reason,
+                rejectedBy: userProfile?.name || 'Unknown',
+                rejectedAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+            })
+            setViewSampleItem(null)
+            await loadSamples()
+        } catch (e) {
+            console.error('Error rejecting sample:', e)
+            alert('Error rejecting sample: ' + e.message)
+        }
+    }
+
+    const handleAddSampleToInventory = async (sample) => {
+        if (!confirm(`Add "${sample.name}" to main inventory?`)) return
+        try {
+            const db = getDb()
+            // Build inventory doc from sample data
+            const inventoryData = {
+                name: sample.name,
+                websiteProductName: sample.websiteProductName || '',
+                type: sample.type,
+                imageUrl: sample.imageUrl || '',
+                location: sample.location || '',
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+                fromSample: true,
+                sampleId: sample.id,
+            }
+
+            if (sample.type === 'fabric') {
+                inventoryData.totalLength = parseFloat(sample.totalLength) || 0
+                inventoryData.currentLength = parseFloat(sample.totalLength) || 0
+                inventoryData.unit = sample.unit || 'meters'
+                inventoryData.costPerMeter = parseFloat(sample.costPerMeter) || 0
+                inventoryData.lengthRequiredPerOutfit = parseFloat(sample.lengthRequiredPerOutfit) || 0
+                inventoryData.currentOrderStatus = 'None'
+                if (sample.vendorId) {
+                    inventoryData.vendorId = sample.vendorId
+                    inventoryData.vendorName = sample.vendorName || ''
+                }
+                if (sample.transportCost) inventoryData.transportCost = parseFloat(sample.transportCost) || 0
+                if (sample.otherCosts) inventoryData.otherCosts = parseFloat(sample.otherCosts) || 0
+                if (sample.actualCostPerMeter) inventoryData.actualCostPerMeter = sample.actualCostPerMeter
+            } else {
+                // Outfit
+                inventoryData.sellingPrice = parseFloat(sample.sellingPrice) || 0
+                inventoryData.stitchingCost = parseFloat(sample.stitchingCost) || 0
+                inventoryData.lengthRequiredPerOutfit = parseFloat(sample.lengthRequiredPerOutfit) || 0
+                inventoryData.stockBreakdown = sample.stockBreakdown || { S: 0, M: 0, L: 0, XL: 0, XXL: 0, XS: 0 }
+                inventoryData.manualSoldCount = 0
+            }
+
+            // Add to main fabrics collection
+            const ref = await addDoc(collection(db, FABRICS_COLLECTION), inventoryData)
+
+            // Update sample status to 'added'
+            await updateDoc(doc(db, SAMPLES_COLLECTION, sample.id), {
+                sampleStatus: 'added',
+                inventoryItemId: ref.id,
+                addedToInventoryAt: serverTimestamp(),
+                addedToInventoryBy: userProfile?.name || 'Unknown',
+                updatedAt: serverTimestamp(),
+            })
+
+            setViewSampleItem(null)
+            await Promise.all([loadInventory(), loadSamples()])
+        } catch (e) {
+            console.error('Error adding sample to inventory:', e)
+            alert('Error adding to inventory: ' + e.message)
+        }
+    }
+
+    const handleDeleteSample = async (sample) => {
+        if (!confirm(`Delete sample "${sample.name}"?`)) return
+        try {
+            const db = getDb()
+            await deleteDoc(doc(db, SAMPLES_COLLECTION, sample.id))
+            setViewSampleItem(null)
+            await loadSamples()
+        } catch (e) {
+            console.error('Error deleting sample:', e)
+            alert('Error deleting sample: ' + e.message)
+        }
+    }
+
+    const handleUpdateSampleStatus = async (sample, newStatus) => {
+        try {
+            const db = getDb()
+            await updateDoc(doc(db, SAMPLES_COLLECTION, sample.id), {
+                sampleStatus: newStatus,
+                updatedAt: serverTimestamp(),
+                statusChangedBy: userProfile?.name || 'Unknown',
+            })
+            setViewSampleItem(null)
+            await loadSamples()
+        } catch (e) {
+            console.error('Error updating sample status:', e)
+            alert('Error updating status: ' + e.message)
+        }
+    }
+
+    const handleMoveToSamples = async (item) => {
+        if (!confirm(`Move "${item.name}" back to samples? It will be removed from inventory.`)) return
+        try {
+            const db = getDb()
+            const sampleData = {
+                name: item.name,
+                websiteProductName: item.websiteProductName || '',
+                type: item.type,
+                imageUrl: item.imageUrl || '',
+                location: item.location || '',
+                sampleStatus: 'pending',
+                addedBy: userProfile?.name || 'Unknown',
+                movedFromInventory: true,
+                originalInventoryId: item.id,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+            }
+            if (item.type === 'fabric') {
+                sampleData.totalLength = item.totalLength || 0
+                sampleData.unit = item.unit || 'meters'
+                sampleData.costPerMeter = item.costPerMeter || 0
+                sampleData.lengthRequiredPerOutfit = item.lengthRequiredPerOutfit || 0
+                if (item.vendorId) { sampleData.vendorId = item.vendorId; sampleData.vendorName = item.vendorName || '' }
+            } else {
+                sampleData.sellingPrice = item.sellingPrice || 0
+                sampleData.stitchingCost = item.stitchingCost || 0
+                sampleData.lengthRequiredPerOutfit = item.lengthRequiredPerOutfit || 0
+                sampleData.stockBreakdown = item.stockBreakdown || {}
+            }
+            await addDoc(collection(db, SAMPLES_COLLECTION), sampleData)
+            await deleteDoc(doc(db, FABRICS_COLLECTION, item.id))
+            setViewInventoryItem(null)
+            await Promise.all([loadInventory(), loadSamples()])
+        } catch (e) {
+            console.error('Error moving to samples:', e)
+            alert('Error moving to samples: ' + e.message)
+        }
     }
 
     // Calculate sold counts from orders
@@ -531,6 +719,7 @@ function InnerApp() {
         { id: 'orders', label: 'Orders', icon: Icons.Clipboard },
         { id: 'add', label: 'Add', icon: Icons.Plus },
         { id: 'outfits', label: 'Outfits', icon: Icons.ShoppingBag },
+        { id: 'samples', label: 'Samples', icon: Icons.Shield },
         { id: 'customers', label: 'Customers', icon: Icons.Users },
         ...(userProfile?.role === 'admin' ? [
             { id: 'financial', label: 'Financial', icon: Icons.TrendingUp },
@@ -640,6 +829,21 @@ function InnerApp() {
                         <Outfits allOrders={allOrders} inventoryItems={inventoryItems} />
                     </TabBoundary>
                 )}
+                {activeTab === 'samples' && (
+                    <TabBoundary label="Samples">
+                        <SampleInventory
+                            sampleItems={sampleItems}
+                            onAddSample={() => setShowAddSampleModal(true)}
+                            onApproveSample={(s) => handleApproveSample(s)}
+                            onRejectSample={(s) => { setViewSampleItem(s) }}
+                            onAddToInventory={handleAddSampleToInventory}
+                            onViewSample={(s) => setViewSampleItem(s)}
+                            onDeleteSample={handleDeleteSample}
+                            onUpdateSampleStatus={handleUpdateSampleStatus}
+                            userRole={userProfile?.role}
+                        />
+                    </TabBoundary>
+                )}
                 {activeTab === 'customers' && (
                     <TabBoundary label="Customers">
                         <Customers
@@ -674,7 +878,7 @@ function InnerApp() {
                 )}
 
                 {/* Modals wired to state and handlers */}
-                <InventoryDetailModal item={viewInventoryItem} soldCounts={soldCounts} allOrders={allOrders} onClose={() => setViewInventoryItem(null)} onOpenEdit={openEditModal} onOpenStock={openStockModal} onViewHistory={(it) => { setViewInventoryItem(null); setHistoryItemId(it.id); }} onDelete={handleDeleteItem} />
+                <InventoryDetailModal item={viewInventoryItem} soldCounts={soldCounts} allOrders={allOrders} onClose={() => setViewInventoryItem(null)} onOpenEdit={openEditModal} onOpenStock={openStockModal} onViewHistory={(it) => { setViewInventoryItem(null); setHistoryItemId(it.id); }} onDelete={handleDeleteItem} onMoveToSamples={handleMoveToSamples} />
                 <OrderDetailModal order={viewOrder} onClose={() => setViewOrder(null)} onEdit={(o) => { setViewOrder(null); setEditOrder(o); setShowLegacyModal(true); }} onShip={(o) => { setShippingOrderId(o.id); }} onReturn={(o) => { setReturnOrderId(o.id) }} userProfile={userProfile} onDataChanged={refreshAllData} />
                 <CustomerDetailModal customer={viewCustomer} onClose={() => setViewCustomer(null)} allOrders={allOrders} inventoryItems={inventoryItems} userRole={userProfile?.role} onDataChanged={refreshAllData} onAddOrder={handleAddOrderFromCustomer} />
                 <LegacyOrderModal visible={showLegacyModal} onClose={() => { setShowLegacyModal(false); setEditOrder(null); setLegacyForm(null); }} inventoryItems={inventoryItems} userProfile={userProfile} onDataChanged={refreshAllData} editOrder={editOrder} initialForm={legacyForm} />
@@ -688,6 +892,8 @@ function InnerApp() {
                 <ChangeHistoryModal visible={changeHistoryVisible} onClose={() => setChangeHistoryVisible(false)} />
                 <ProductionModal visible={showProductionModal} onClose={() => setShowProductionModal(false)} inventoryItems={inventoryItems} onDataChanged={refreshAllData} userProfile={userProfile} />
                 <ReceiveProductionModal visible={!!receiveBatch} batch={receiveBatch} onClose={() => setReceiveBatch(null)} onDataChanged={refreshAllData} inventoryItems={inventoryItems} userProfile={userProfile} />
+                <AddSampleModal visible={showAddSampleModal} onClose={() => setShowAddSampleModal(false)} onDataChanged={loadSamples} userProfile={userProfile} vendors={vendors} />
+                <SampleDetailModal sample={viewSampleItem} onClose={() => setViewSampleItem(null)} onApproveSample={handleApproveSample} onRejectSample={handleRejectSample} onAddToInventory={handleAddSampleToInventory} onDeleteSample={handleDeleteSample} onUpdateSampleStatus={handleUpdateSampleStatus} userRole={userProfile?.role} />
             </main>
 
             {/* Mobile Menu Drawer */}

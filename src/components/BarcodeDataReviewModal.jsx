@@ -10,31 +10,38 @@ export default function BarcodeDataReviewModal({ visible, data, inventoryItems =
   const [editedData, setEditedData] = useState(data)
   const [showRawData, setShowRawData] = useState(false)
   const [errors, setErrors] = useState({})
+  const [selectedOutfitId, setSelectedOutfitId] = useState(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
   // Update editedData when data prop changes
   React.useEffect(() => {
     if (data) {
       setEditedData(data)
       setErrors({})
+      setSelectedOutfitId(null)
     }
   }, [data])
 
-  // Find matching outfit from inventory
-  const matchedOutfit = useMemo(() => {
+  // Get available outfits
+  const availableOutfits = useMemo(() => {
+    return inventoryItems.filter(i => i.type === 'outfit')
+  }, [inventoryItems])
+
+  // Get auto-suggested outfit (for reference)
+  const suggestedOutfit = useMemo(() => {
     if (!editedData?.items || editedData.items.length === 0) return null
     
-    const outfits = inventoryItems.filter(i => i.type === 'outfit')
     const firstItem = editedData.items[0]
     const itemName = firstItem.name?.toLowerCase() || ''
     
     if (!itemName) return null
     
     // Exact match
-    let match = outfits.find(o => o.name.toLowerCase() === itemName)
+    let match = availableOutfits.find(o => o.name.toLowerCase() === itemName)
     if (match) return match
     
     // Substring match
-    match = outfits.find(o => 
+    match = availableOutfits.find(o => 
       o.name.toLowerCase().includes(itemName) || 
       itemName.includes(o.name.toLowerCase())
     )
@@ -42,13 +49,21 @@ export default function BarcodeDataReviewModal({ visible, data, inventoryItems =
     
     // Fuzzy match
     const keywords = itemName.split(/[\s\-:]+/).filter(k => k.length > 2)
-    match = outfits.find(o => {
+    match = availableOutfits.find(o => {
       const outfitLower = o.name.toLowerCase()
       return keywords.some(k => outfitLower.includes(k))
     })
     
     return match
-  }, [editedData?.items, inventoryItems])
+  }, [editedData?.items, availableOutfits])
+
+  // Get selected outfit
+  const matchedOutfit = useMemo(() => {
+    if (selectedOutfitId) {
+      return availableOutfits.find(o => o.id === selectedOutfitId)
+    }
+    return suggestedOutfit
+  }, [selectedOutfitId, suggestedOutfit, availableOutfits])
 
   const validateForm = () => {
     const newErrors = {}
@@ -67,12 +82,32 @@ export default function BarcodeDataReviewModal({ visible, data, inventoryItems =
     return Object.keys(newErrors).length === 0
   }
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
+    if (isSubmitting) return // Prevent multiple clicks
+    
+    console.log('🔍 Validating form...')
     if (validateForm()) {
-      onConfirm({
-        ...editedData,
-        matchedOutfit
-      })
+      try {
+        setIsSubmitting(true)
+        console.log('📤 Submitting reviewed data with outfit:', matchedOutfit?.id || 'none')
+        
+        onConfirm({
+          ...editedData,
+          matchedOutfit
+        })
+        
+        console.log('✅ Data confirmed, waiting for modal to close...')
+        
+        // Reset submitting state after a short delay
+        setTimeout(() => {
+          setIsSubmitting(false)
+        }, 500)
+      } catch (error) {
+        console.error('❌ Error confirming data:', error)
+        setIsSubmitting(false)
+      }
+    } else {
+      console.warn('⚠️ Form validation failed')
     }
   }
 
@@ -201,6 +236,21 @@ export default function BarcodeDataReviewModal({ visible, data, inventoryItems =
                 />
               </div>
 
+              {/* Platform */}
+              <div>
+                <label className="text-xs font-bold text-emerald-100/80 uppercase block mb-1.5">
+                  Platform
+                </label>
+                <select
+                  value={editedData.platform || 'Shopify'}
+                  onChange={e => handleFieldChange('platform', e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg bg-emerald-900/50 border border-lime-glow/50 text-white text-sm focus:outline-none focus:border-lime-glow transition"
+                >
+                  <option value="Shopify">Shopify</option>
+                  <option value="Shopdeck">Shopdeck</option>
+                </select>
+              </div>
+
               {/* Customer Name */}
               <div>
                 <label className="text-xs font-bold text-emerald-100/80 uppercase block mb-1.5">
@@ -283,15 +333,25 @@ export default function BarcodeDataReviewModal({ visible, data, inventoryItems =
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <div>
                       <label className="text-xs font-bold text-emerald-100/60 uppercase block mb-1">
-                        Item Name
+                        Item Name / Outfit
                       </label>
-                      <input
-                        type="text"
-                        value={item.name || ''}
-                        onChange={e => handleItemChange(idx, 'name', e.target.value)}
+                      <select
+                        value={selectedOutfitId || suggestedOutfit?.id || ''}
+                        onChange={e => setSelectedOutfitId(e.target.value || null)}
                         className="w-full px-3 py-1.5 rounded text-sm bg-emerald-800/50 border border-lime-glow/30 text-white focus:outline-none focus:border-lime-glow transition"
-                        placeholder="Item name"
-                      />
+                      >
+                        {!selectedOutfitId && suggestedOutfit && (
+                          <option value={suggestedOutfit.id}>{suggestedOutfit.name} (Suggested)</option>
+                        )}
+                        {!suggestedOutfit && (
+                          <option value="">-- Select Outfit --</option>
+                        )}
+                        {availableOutfits.map(outfit => (
+                          <option key={outfit.id} value={outfit.id}>
+                            {outfit.name}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
@@ -327,17 +387,6 @@ export default function BarcodeDataReviewModal({ visible, data, inventoryItems =
                   </div>
                 </div>
               ))}
-
-              {matchedOutfit && (
-                <div className="bg-lime-glow/10 border border-lime-glow/50 rounded-lg p-3">
-                  <p className="text-xs font-bold text-lime-300 uppercase tracking-wide mb-1">
-                    ✓ Outfit Matched
-                  </p>
-                  <p className="text-sm text-lime-200 font-semibold">
-                    {matchedOutfit.name}
-                  </p>
-                </div>
-              )}
             </div>
           )}
 
@@ -374,9 +423,10 @@ export default function BarcodeDataReviewModal({ visible, data, inventoryItems =
           `}</style>
           <button
             onClick={handleConfirm}
-            className="flex-1 px-6 py-4 sm:py-3 rounded-xl sm:rounded-lg bg-lime-glow hover:bg-lime-300 active:bg-lime-400 text-emerald-900 font-bold text-base sm:text-sm transition touch-manipulation shadow-lg"
+            disabled={isSubmitting}
+            className="flex-1 px-6 py-4 sm:py-3 rounded-xl sm:rounded-lg bg-lime-glow hover:bg-lime-300 active:bg-lime-400 disabled:bg-lime-200 disabled:opacity-50 disabled:cursor-not-allowed text-emerald-900 font-bold text-base sm:text-sm transition touch-manipulation shadow-lg"
           >
-            ✓ Use This Data
+            {isSubmitting ? '⏳ Processing...' : '✓ Use This Data'}
           </button>
           <button
             onClick={onCancel}

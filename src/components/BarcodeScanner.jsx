@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { X, Loader, AlertCircle, Camera } from 'lucide-react'
+import { Html5QrcodeScanner } from 'html5-qrcode'
 
 /**
  * BarcodeScanner Component
@@ -18,6 +19,7 @@ export default function BarcodeScanner({ visible, onScanned, onClose, batchMode 
   const animationRef = useRef(null)
   const lastScannedRef = useRef(null)
   const lastScanTimeRef = useRef(0)
+  const scannerRef = useRef(null)
   const cooldownPeriod = 1500 // 1.5 seconds cooldown to prevent duplicates
 
   // Start camera when modal opens
@@ -26,6 +28,15 @@ export default function BarcodeScanner({ visible, onScanned, onClose, batchMode 
       startCamera()
     }
     return () => {
+      // Cleanup scanner on unmount
+      if (scannerRef.current) {
+        try {
+          scannerRef.current.clear()
+          scannerRef.current = null
+        } catch (err) {
+          console.log('Scanner cleanup error:', err)
+        }
+      }
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop())
       }
@@ -40,116 +51,84 @@ export default function BarcodeScanner({ visible, onScanned, onClose, batchMode 
     setScanning(true)
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
-      })
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        streamRef.current = stream
-
-        // Start barcode detection after video loads
-        videoRef.current.onloadedmetadata = () => {
-          startBarcodeDetection()
+      // Clean up existing scanner first
+      if (scannerRef.current) {
+        try {
+          await scannerRef.current.clear()
+          scannerRef.current = null
+        } catch (err) {
+          console.log('Error clearing previous scanner:', err)
         }
       }
+
+      // Small delay to ensure DOM is ready
+      await new Promise(resolve => setTimeout(resolve, 100))
+
+      // Initialize Html5QrcodeScanner
+      const scanner = new Html5QrcodeScanner(
+        'qr-reader', // ID of the element where scanner will render
+        { 
+          fps: 10,
+          qrbox: { width: 250, height: 250 },
+          disableFlip: false,
+          aspectRatio: 1.0
+        },
+        /* verbose= */ false
+      )
+
+      scannerRef.current = scanner
+
+      scanner.render(
+        (decodedText) => {
+          // Success callback
+          const now = Date.now()
+          const timeSinceLastScan = now - lastScanTimeRef.current
+          
+          // Prevent duplicates
+          if (decodedText === lastScannedRef.current && timeSinceLastScan < cooldownPeriod) {
+            return // Same code too soon - ignore
+          }
+          
+          lastScannedRef.current = decodedText
+          lastScanTimeRef.current = now
+          
+          setScanSuccess(true)
+          setTimeout(() => setScanSuccess(false), 500)
+          
+          if (batchMode) {
+            onScanned(decodedText)
+            // Keep scanning
+          } else {
+            scanner.clear()
+            stopCamera()
+            onScanned(decodedText)
+          }
+        },
+        (error) => {
+          // Error callback - suppress spam
+          if (error && !error.toString().includes('NotFoundException')) {
+            console.log('Scan error:', error)
+          }
+        }
+      )
     } catch (err) {
-      console.error('Camera error:', err)
-      setError(`Camera access denied: ${err.message}. Use manual input below.`)
+      console.error('Scanner init error:', err)
+      setError(`Scanner error: ${err.message}. Use manual input.`)
       setScanning(false)
       setShowManualInput(true)
     }
   }
 
   const startBarcodeDetection = async () => {
-    if (!videoRef.current || !canvasRef.current) return
-
-    const video = videoRef.current
-    const canvas = canvasRef.current
-    const ctx = canvas.getContext('2d')
-
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
-
-    const detectFrame = async () => {
-      if (!video.paused && !video.ended) {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-
-        try {
-          // Try to detect barcode using canvas
-          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-          const detected = await detectBarcodeFromImage(imageData)
-
-          if (detected) {
-            const now = Date.now()
-            const timeSinceLastScan = now - lastScanTimeRef.current
-            
-            // Prevent duplicates: check if same code scanned within cooldown period
-            if (detected === lastScannedRef.current && timeSinceLastScan < cooldownPeriod) {
-              // Same code too soon - ignore and continue scanning
-              animationRef.current = requestAnimationFrame(detectFrame)
-              return
-            }
-            
-            // Valid new scan - update tracking
-            lastScannedRef.current = detected
-            lastScanTimeRef.current = now
-            
-            // Show success feedback
-            setScanSuccess(true)
-            setTimeout(() => setScanSuccess(false), 500)
-            
-            if (batchMode) {
-              // In batch mode, keep camera open and reset for next scan
-              onScanned(detected)
-              // Continue scanning after brief pause
-              animationRef.current = requestAnimationFrame(detectFrame)
-              return
-            } else {
-              // Single mode - stop and close
-              stopCamera()
-              onScanned(detected)
-              return
-            }
-          }
-        } catch (err) {
-          console.error('Detection error:', err)
-        }
-
-        animationRef.current = requestAnimationFrame(detectFrame)
-      }
-    }
-
-    animationRef.current = requestAnimationFrame(detectFrame)
-  }
-
-  /**
-   * Simple barcode detection from image data
-   * This is a basic implementation - for production, use a library like:
-   * - html5-qrcode (web)
-   * - @react-native-ml-kit/barcode-scanning (React Native)
-   */
-  const detectBarcodeFromImage = async (imageData) => {
-    // For this implementation, we'll use the Barcode Detection API if available
-    if ('BarcodeDetector' in window) {
-      try {
-        const barcodes = await new window.BarcodeDetector({
-          formats: ['qr_code', 'code_128', 'code_39', 'ean_13', 'ean_8']
-        }).detect(imageData)
-
-        if (barcodes && barcodes.length > 0) {
-          return barcodes[0].rawValue
-        }
-      } catch (err) {
-        console.error('Barcode API error:', err)
-      }
-    }
-
-    // Fallback: No detection API, user will need to use manual input
-    return null
+    // Html5QrcodeScanner handles detection internally
+    // This is kept for backwards compatibility but not used
   }
 
   const stopCamera = () => {
+    if (scannerRef.current) {
+      scannerRef.current.clear()
+      scannerRef.current = null
+    }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop())
       streamRef.current = null
@@ -229,21 +208,10 @@ export default function BarcodeScanner({ visible, onScanned, onClose, batchMode 
 
         {/* Camera View */}
         <div className="relative bg-black flex-1 overflow-hidden flex items-center justify-center">
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className="w-full h-full object-cover"
-          />
-          <canvas
-            ref={canvasRef}
-            className="hidden"
-          />
-
+          <div id="qr-reader" style={{ width: '100%' }} className="flex-1"></div>          
           {/* Scanning Indicator */}
           {scanning && !scanSuccess && (
-            <div className="absolute inset-0 flex items-center justify-center">
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
               {/* Larger scanning frame with corner guides */}
               <div className="relative w-64 h-64">
                 {/* Corner markers */}

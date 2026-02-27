@@ -23,7 +23,7 @@ export function parseBarcodeData(barcodeText) {
   try {
     const json = JSON.parse(text)
     if (json && typeof json === 'object') {
-      parsed = json
+      parsed = { ...json, raw: text }
       console.log('✅ Parsed as JSON')
       return normalizeData(parsed, 'json')
     }
@@ -38,7 +38,7 @@ export function parseBarcodeData(barcodeText) {
     parts.forEach((p, i) => console.log(`  Part ${i}:`, p))
     
     if (parts.length >= 3) {
-      parsed = parsePipeDelimited(parts)
+      parsed = { ...parsePipeDelimited(parts), raw: text }
       console.log('✅ Parsed as pipe-delimited')
       return normalizeData(parsed, 'pipe')
     }
@@ -48,14 +48,14 @@ export function parseBarcodeData(barcodeText) {
   if (text.includes(';')) {
     const parts = text.split(';')
     if (parts.length >= 3) {
-      parsed = parseSemicolonDelimited(parts)
+      parsed = { ...parseSemicolonDelimited(parts), raw: text }
       console.log('✅ Parsed as semicolon-delimited')
       return normalizeData(parsed, 'semicolon')
     }
   }
 
   // Try to extract order number and other patterns
-  parsed = extractPatterns(text)
+  parsed = { ...extractPatterns(text), raw: text }
   
   // If we got an order number, it's valid data
   if (parsed.orderNumber) {
@@ -215,6 +215,7 @@ function normalizeData(data, format) {
     type: detectType(data),
     format,
     raw: data.raw || data,
+    platform: detectPlatform(data),
     orderNumber: cleanOrderNumber(data.orderNumber || ''),
     customerName: (data.customerName || '').trim(),
     phone: cleanPhone(data.phone || ''),
@@ -226,6 +227,31 @@ function normalizeData(data, format) {
   }
 
   return normalized
+}
+
+/**
+ * Detect platform from barcode data and raw text
+ */
+function detectPlatform(data) {
+  const rawText = typeof data.raw === 'string' ? data.raw : ''
+  const platformHint = (data.platform || data.source || '').toString()
+  const orderNumber = (data.orderNumber || '').toString()
+  const invoiceNumber = (data.invoiceNumber || '').toString()
+  const combined = `${platformHint} ${rawText} ${orderNumber} ${invoiceNumber}`.toLowerCase()
+
+  if (combined.includes('shopdeck') || combined.includes('shopodeck') || combined.includes('shpdck')) {
+    return 'Shopdeck'
+  }
+
+  if (combined.includes('shopify')) {
+    return 'Shopify'
+  }
+
+  if (/^shpdck/i.test(orderNumber)) {
+    return 'Shopdeck'
+  }
+
+  return 'Shopify'
 }
 
 /**

@@ -37,6 +37,8 @@ export default function Inventory({
         if (inventoryFilter === 'fabrics') list = list.filter(i => i.type === 'fabric')
         if (inventoryFilter === 'outfits') list = list.filter(i => i.type === 'outfit')
         if (inventoryFilter === 'low') list = list.filter(f => f.type === 'fabric' && f.currentLength < 5)
+        if (inventoryFilter === 'from_samples') list = list.filter(i => i.fromSample === true)
+        if (inventoryFilter === 'finalized') list = list.filter(i => i.type === 'outfit' && !i.fromSample)
 
         list.sort((a, b) => {
             if (sortKey === 'name') return (a.name || '').localeCompare(b.name || '')
@@ -94,13 +96,20 @@ export default function Inventory({
             </div>
 
             <div className="flex space-x-2 overflow-x-auto no-scrollbar pb-2">
-                {['all', 'fabrics', 'outfits', 'low'].map(f => (
+                {[
+                    { key: 'all', label: 'All' },
+                    { key: 'fabrics', label: 'Fabrics' },
+                    { key: 'outfits', label: 'Outfits' },
+                    { key: 'finalized', label: '✅ Finalized' },
+                    { key: 'from_samples', label: '🧪 From Samples' },
+                    { key: 'low', label: 'Low Stock' },
+                ].map(f => (
                     <button
-                        key={f}
-                        onClick={() => setInventoryFilter(f)}
-                        className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap capitalize transition-all ${inventoryFilter === f ? 'bg-emerald-pine text-lime-glow shadow-lg' : 'bg-lime-glow text-emerald-pine border-2 border-lime-glow'}`}
+                        key={f.key}
+                        onClick={() => setInventoryFilter(f.key)}
+                        className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-all ${inventoryFilter === f.key ? 'bg-emerald-pine text-lime-glow shadow-lg' : 'bg-lime-glow text-emerald-pine border-2 border-lime-glow'}`}
                     >
-                        {f}
+                        {f.label}
                     </button>
                 ))}
             </div>
@@ -148,6 +157,11 @@ export default function Inventory({
                                         Stock: {totalReady} <span className="opacity-60 font-normal">| Sold: {sold}</span>
                                     </p>
                                 </div>
+                                {item.fromSample && (
+                                    <div className="absolute top-2 left-2 bg-purple-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-full">
+                                        🧪 Sample
+                                    </div>
+                                )}
                             </div>
                         )
                     }

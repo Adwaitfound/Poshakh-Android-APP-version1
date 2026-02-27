@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react'
-import { Scissors, Clipboard, X, Trash2, Truck, Package, AlertCircle, ChevronDown, ChevronUp, Download, DollarSign, TrendingUp, Clock, Camera } from 'lucide-react'
+import { Scissors, Clipboard, X, Trash2, Truck, Package, AlertCircle, ChevronDown, ChevronUp, Download, DollarSign, TrendingUp, Clock, Camera, QrCode, Upload } from 'lucide-react'
 import { getDb } from '../firebase'
 import { collection, addDoc, serverTimestamp, updateDoc, doc, increment, getDocs, query, where } from 'firebase/firestore'
 import { FABRICS_COLLECTION, ORDERS_COLLECTION, parsePrice, formatCurrency } from '../lib/utils'
@@ -8,7 +8,10 @@ import { logOrderCreated, logOrderStatusChanged, logStockAdjusted } from '../lib
 import BarcodeScanner from './BarcodeScanner'
 import BarcodeDataReviewModal from './BarcodeDataReviewModal'
 import BatchScanQueue from './BatchScanQueue'
+import ShopdeckQRGenerator from './ShopdeckQRGenerator'
+import ShopdeckSlipUploader from './ShopdeckSlipUploader'
 import { parseBarcodeData } from '../lib/barcodeParser'
+import { migrateShopdeckOrderIds, getMigrationStats, renumberShopdeckOrders, cleanupShopdeckDuplicates } from '../lib/migrateShopdckIds'
 
 
 export default function Orders({
@@ -44,7 +47,14 @@ export default function Orders({
     const [scanQueue, setScanQueue] = useState([])
     const [currentQueueIndex, setCurrentQueueIndex] = useState(0)
     const [isProcessingQueue, setIsProcessingQueue] = useState(false)
+    const [showQRGenerator, setShowQRGenerator] = useState(false)
+    const [selectedOrderForQR, setSelectedOrderForQR] = useState(null)
+    const [showSlipUploader, setShowSlipUploader] = useState(false)
     const { notify } = useNotification()
+    const [migrationStats, setMigrationStats] = useState(null)
+    const [isMigrating, setIsMigrating] = useState(false)
+    const [showMigrationModal, setShowMigrationModal] = useState(false)
+    const [migrationMode, setMigrationMode] = useState('renumber') // 'renumber' or 'format-fix'
 
     // Multi-select helpers
     const toggleSelectOrder = (orderId) => {
@@ -451,10 +461,12 @@ export default function Orders({
         notify.info('Exited batch scan mode')
     }
 
-    const handleQueuedOrderConfirm = (reviewedData) => {
+    const handleQueuedOrderConfirm = async (reviewedData) => {
         try {
+            console.log('🎯 handleQueuedOrderConfirm called')
+            
             // Auto-fill the order form with confirmed data
-            const { orderNumber, invoiceNumber, customerName, phone, address, totalPrice, items, matchedOutfit } = reviewedData
+            const { orderNumber, invoiceNumber, customerName, phone, address, totalPrice, items, matchedOutfit, platform } = reviewedData
             
             // Extract selling price from total price
             const sellingPrice = totalPrice ? totalPrice.replace(/[^\d.]/g, '') : ''
@@ -463,71 +475,115 @@ export default function Orders({
             const size = (items && items[0] && items[0].size) ? items[0].size : 'M'
             const quantity = (items && items[0] && items[0].quantity) ? items[0].quantity : 1
             
-            // Auto-fill form
-            setStockOrderForm(prev => ({
-                ...prev,
-                orderNumber: orderNumber || prev.orderNumber,
-                invoiceNumber: invoiceNumber || prev.invoiceNumber,
-                customerName: customerName || prev.customerName,
-                phone: phone || prev.phone,
-                address: address || prev.address,
-                size: size || prev.size,
-                quantity: quantity.toString() || prev.quantity,
-                sellingPrice: sellingPrice || prev.sellingPrice,
-                outfitId: matchedOutfit?.id || prev.outfitId // Auto-fill outfit if matched
-            }))
+            // Prepare form data
+            const formData = {
+                orderNumber: orderNumber || '',
+                invoiceNumber: invoiceNumber || '',
+                customerName: customerName || '',
+                phone: phone || '',
+                address: address || '',
+                size: size || 'M',
+                quantity: quantity.toString() || '1',
+                sellingPrice: sellingPrice || '',
+                outfitId: matchedOutfit?.id || '',
+                fabricCost: '',
+                stitchingCost: '',
+                productionCost: '',
+                platform: platform || 'Shopify'
+            }
+            
+            // Update form state
+            setStockOrderForm(formData)
             
             // Mark this order as reviewed and auto-submit
             setIsProcessingQueue(true)
-            setTimeout(() => {
-                // Trigger the form submit
-                const form = document.querySelector('[data-stock-order-form]')
-                if (form) {
-                    form.dispatchEvent(new Event('submit', { bubbles: true }))
-                }
-            }, 300)
+            console.log('⏳ Set isProcessingQueue to true, auto-submitting order...')
+            
+            // Submit the order directly - this will throw if there's an error
+            await handleStockOrderSubmit({ preventDefault: () => {} }, false)
+            
+            console.log('✅ Order submitted successfully, incrementing queue index')
+            
+            // Only proceed if submission was successful
+            // Move to next order in queue
+            const nextIndex = currentQueueIndex + 1
+            setCurrentQueueIndex(nextIndex)
+            
+            // Close review modal only after successful submission
+            setShowBarcodeReview(false)
+            setBarcodeReviewData(null)
+            
+            if (nextIndex < scanQueue.length) {
+                // More orders in queue - show next review automatically
+                console.log(`📋 Loading next order ${nextIndex + 1}/${scanQueue.length}`)
+                setTimeout(() => {
+                    setBarcodeReviewData(scanQueue[nextIndex])
+                    setShowBarcodeReview(true)
+                    setIsProcessingQueue(false)
+                }, 500)
+            } else {
+                // All orders completed
+                console.log('🎉 All orders completed!')
+                setIsProcessingQueue(false)
+                setScanQueue([])
+                setCurrentQueueIndex(0)
+                setBatchMode(false)
+                notify.success('🎉 All scanned orders completed!')
+            }
         } catch (error) {
-            console.error('Error confirming queued barcode data:', error)
-            notify.error('Failed to process order: ' + error.message)
+            console.error('❌ Error confirming queued barcode data:', error)
+            // Keep modal open so user can fix the issue
             setIsProcessingQueue(false)
+            // Show error notification - user can edit and try again
+            notify.error('⚠️ ' + error.message + ' - Please fix and try again')
         }
     }
 
-    const handleBarcodeDataConfirm = (reviewedData) => {
+    const handleBarcodeDataConfirm = async (reviewedData) => {
         try {
-            // Auto-fill the order form with confirmed data
-            const { orderNumber, invoiceNumber, customerName, phone, address, totalPrice, items, matchedOutfit } = reviewedData
-            
-            // Extract selling price from total price
-            const sellingPrice = totalPrice ? totalPrice.replace(/[^\d.]/g, '') : ''
-            
-            // Get size from first item
-            const size = (items && items[0] && items[0].size) ? items[0].size : 'M'
-            const quantity = (items && items[0] && items[0].quantity) ? items[0].quantity : 1
-            
-            // Auto-fill form
-            setStockOrderForm(prev => ({
-                ...prev,
-                orderNumber: orderNumber || prev.orderNumber,
-                invoiceNumber: invoiceNumber || prev.invoiceNumber,
-                customerName: customerName || prev.customerName,
-                phone: phone || prev.phone,
-                address: address || prev.address,
-                size: size || prev.size,
-                quantity: quantity.toString() || prev.quantity,
-                sellingPrice: sellingPrice || prev.sellingPrice,
-                outfitId: matchedOutfit?.id || prev.outfitId // Auto-fill outfit if matched
-            }))
+            console.log('🔄 Handling barcode data confirm...', { batchMode, hasReviewedData: !!reviewedData })
             
             if (batchMode) {
-                // In batch mode, auto-submit after form is filled
-                handleQueuedOrderConfirm(reviewedData)
+                console.log('⚡ Batch mode - keeping modal open and auto-submitting...')
+                // In batch mode, keep modal open and submit
+                setIsProcessingQueue(true)
+                await handleQueuedOrderConfirm(reviewedData)
+                // Modal will close after successful submission or will show next item
             } else {
-                // Normal mode - scroll to form and close modals
+                // Normal mode - auto-fill form and close modal
+                const { orderNumber, invoiceNumber, customerName, phone, address, totalPrice, items, matchedOutfit, platform } = reviewedData
+                
+                console.log('📋 Extracted data:', { orderNumber, customerName, outfitId: matchedOutfit?.id })
+                
+                // Extract selling price from total price
+                const sellingPrice = totalPrice ? totalPrice.replace(/[^\d.]/g, '') : ''
+                
+                // Get size from first item
+                const size = (items && items[0] && items[0].size) ? items[0].size : 'M'
+                const quantity = (items && items[0] && items[0].quantity) ? items[0].quantity : 1
+                
+                // Auto-fill form
+                setStockOrderForm(prev => ({
+                    ...prev,
+                    orderNumber: orderNumber || prev.orderNumber,
+                    invoiceNumber: invoiceNumber || prev.invoiceNumber,
+                    customerName: customerName || prev.customerName,
+                    phone: phone || prev.phone,
+                    address: address || prev.address,
+                    size: size || prev.size,
+                    quantity: quantity.toString() || prev.quantity,
+                    sellingPrice: sellingPrice || prev.sellingPrice,
+                    outfitId: matchedOutfit?.id || prev.outfitId, // Auto-fill outfit if matched
+                    platform: platform || prev.platform || 'Shopify'
+                }))
+                
+                console.log('✅ Form auto-filled')
+                
+                // Close the review modal
                 setShowBarcodeReview(false)
                 setBarcodeReviewData(null)
                 
-                notify.success('✓ Order form auto-filled from barcode')
+                notify.success('✓ Order form auto-filled! Review and submit below.')
                 
                 // Scroll to stock order section
                 setTimeout(() => {
@@ -538,8 +594,9 @@ export default function Orders({
                 }, 300)
             }
         } catch (error) {
-            console.error('Error confirming barcode data:', error)
+            console.error('❌ Error confirming barcode data:', error)
             notify.error('Failed to auto-fill form: ' + error.message)
+            setIsProcessingQueue(false)
         }
     }
 
@@ -548,22 +605,25 @@ export default function Orders({
         const { orderNumber, outfitId, size, quantity, customerName, phone, address, fabricCost, stitchingCost, sellingPrice, productionCost, platform } = stockOrderForm
 
         if (!orderNumber || !outfitId || !size || !quantity) {
-            alert('Please fill all required fields')
-            return
+            const errorMsg = 'Please fill all required fields'
+            if (!batchMode) alert(errorMsg)
+            throw new Error(errorMsg)
         }
 
         const outfit = inventoryItems.find(o => o.id === outfitId)
         if (!outfit) {
-            alert('Outfit not found')
-            return
+            const errorMsg = 'Outfit not found - Please select an outfit'
+            if (!batchMode) alert(errorMsg)
+            throw new Error(errorMsg)
         }
 
         const qty = parseInt(quantity)
         const availableStock = parseInt(outfit.stockBreakdown?.[size]) || 0
 
         if (qty > availableStock) {
-            alert(`Not enough stock! Only ${availableStock} pieces available in size ${size}`)
-            return
+            const errorMsg = `Not enough stock! Only ${availableStock} pieces available in size ${size}`
+            if (!batchMode) alert(errorMsg)
+            throw new Error(errorMsg)
         }
 
         setIsUploading(true)
@@ -671,30 +731,217 @@ export default function Orders({
                 notify.success(`✅ Order #${orderNumber} created! ${qty}x ${outfit.name} (${size})`)
             }
 
-            // Handle batch mode - move to next order or exit
-            if (batchMode && isProcessingQueue) {
-                const nextIndex = currentQueueIndex + 1
-                if (nextIndex < scanQueue.length) {
-                    // More orders in queue - show next one
-                    setCurrentQueueIndex(nextIndex)
-                    setBarcodeReviewData(scanQueue[nextIndex])
-                    setShowBarcodeReview(true)
-                } else {
-                    // All orders completed
-                    setIsProcessingQueue(false)
-                    setScanQueue([])
-                    setCurrentQueueIndex(0)
-                    setBatchMode(false)
-                    setShowBarcodeReview(false)
-                    notify.success('🎉 All scanned orders completed!')
-                }
-            }
-
             if (onDataChanged) await onDataChanged()
         } catch (error) {
             console.error('Stock order error:', error)
             notify.error('Error creating order: ' + error.message)
             setIsProcessingQueue(false)
+        } finally {
+            setIsUploading(false)
+        }
+    }
+
+    // ===== SHOPDECK ORDER ID MIGRATION HANDLERS =====
+    const handleCheckMigration = async () => {
+        try {
+            setIsMigrating(true)
+            const db = getDb()
+            const stats = await getMigrationStats(db)
+            setMigrationStats(stats)
+            console.log('Migration stats:', stats)
+        } catch (error) {
+            console.error('Error checking migration stats:', error)
+            notify.error('Failed to check migration stats: ' + error.message)
+        } finally {
+            setIsMigrating(false)
+        }
+    }
+
+    const handleExecuteMigration = async () => {
+        try {
+            const confirmMsg = migrationMode === 'renumber' 
+                ? `This will renumber ${migrationStats?.needsRenumbering || 0} Shopdeck orders chronologically (Shpdck1001, 1002, etc.). Continue?`
+                : `This will format-fix ${migrationStats?.needsFormatFix || 0} Shopdeck orders (Shpdck23 → Shpdck1023). Continue?`
+
+            if (!window.confirm(confirmMsg)) {
+                return
+            }
+
+            setIsMigrating(true)
+            const db = getDb()
+            
+            let result
+            if (migrationMode === 'renumber') {
+                result = await renumberShopdeckOrders(db)
+            } else {
+                result = await migrateShopdeckOrderIds(db)
+            }
+
+            console.log('Migration result:', result)
+            notify.success(`✅ ${result.success} orders updated, ${result.failed} failed`)
+            setShowMigrationModal(false)
+            setMigrationStats(null)
+            if (onDataChanged) await onDataChanged()
+        } catch (error) {
+            console.error('Migration error:', error)
+            notify.error('Migration failed: ' + error.message)
+        } finally {
+            setIsMigrating(false)
+        }
+    }
+
+    // ===== BATCH SAVE ORDERS FROM SHOPDECK UPLOADER =====
+    const handleBatchSaveOrders = async (ordersToSave) => {
+        if (!ordersToSave || ordersToSave.length === 0) {
+            notify.error('No orders to save')
+            return { success: false, saved: 0, failed: 0 }
+        }
+
+        setIsUploading(true)
+        let successCount = 0
+        let failedCount = 0
+        const errors = []
+
+        try {
+            const db = getDb()
+
+            for (let i = 0; i < ordersToSave.length; i++) {
+                const orderData = ordersToSave[i]
+                
+                try {
+                    // Validate required fields
+                    if (!orderData.outfitId) {
+                        errors.push(`Order ${i + 1}: No outfit selected`)
+                        failedCount++
+                        continue
+                    }
+
+                    if (!orderData.size) {
+                        errors.push(`Order ${i + 1}: No size specified`)
+                        failedCount++
+                        continue
+                    }
+
+                    const outfit = inventoryItems.find(o => o.id === orderData.outfitId)
+                    if (!outfit) {
+                        errors.push(`Order ${i + 1}: Outfit not found`)
+                        failedCount++
+                        continue
+                    }
+
+                    const qty = parseInt(orderData.quantity) || 1
+                    const availableStock = parseInt(outfit.stockBreakdown?.[orderData.size]) || 0
+
+                    if (qty > availableStock) {
+                        errors.push(`Order ${i + 1}: Not enough ${outfit.name} in size ${orderData.size} (need ${qty}, have ${availableStock})`)
+                        failedCount++
+                        continue
+                    }
+
+                    // Create/update customer
+                    if (orderData.customerName && orderData.phone) {
+                        try {
+                            const customersRef = collection(db, 'customers')
+                            const q = query(customersRef, where('phone', '==', orderData.phone))
+                            const existingCustomers = await getDocs(q)
+                            
+                            const customerData = {
+                                name: orderData.customerName,
+                                phone: orderData.phone,
+                                address: orderData.shippingAddress || '',
+                                lastOrderDate: serverTimestamp(),
+                                updatedAt: serverTimestamp()
+                            }
+                            
+                            if (existingCustomers.size > 0) {
+                                await updateDoc(doc(db, 'customers', existingCustomers.docs[0].id), customerData)
+                            } else {
+                                await addDoc(customersRef, { ...customerData, createdAt: serverTimestamp() })
+                            }
+                        } catch (err) {
+                            console.warn('Customer creation skipped:', err)
+                        }
+                    }
+
+                    // Create order
+                    const sellingPriceNum = parseFloat(orderData.totalPrice) || 0
+                    const productionCostNum = parseFloat(orderData.productionCost) || outfit.productionCostPerPiece || 0
+                    const fabricCostNum = parseFloat(orderData.fabricCost) || 0
+                    const stitchingCostNum = parseFloat(orderData.stitchingCost) || 0
+
+                    await addDoc(collection(db, ORDERS_COLLECTION), {
+                        orderNumber: orderData.orderId || `Order${Date.now()}`,
+                        outfitId: orderData.outfitId,
+                        outfitName: outfit.name,
+                        imageUrl: outfit.imageUrl || '',
+                        size: orderData.size,
+                        quantity: qty,
+                        customerName: orderData.customerName || 'N/A',
+                        phone: orderData.phone || '',
+                        address: orderData.shippingAddress || '',
+                        platform: 'Shopdeck',
+                        productionCostPerPiece: productionCostNum,
+                        fabricCostPerPiece: fabricCostNum,
+                        stitchingCostPerPiece: stitchingCostNum,
+                        sellingPrice: sellingPriceNum,
+                        profitPerPiece: sellingPriceNum - productionCostNum,
+                        finalSellingPrice: sellingPriceNum * qty,
+                        orderTotal: sellingPriceNum * qty,
+                        stitchingCost: stitchingCostNum * qty,
+                        fabricCost: fabricCostNum * qty,
+                        status: 'Ready to Ship',
+                        orderType: 'stock',
+                        usedByEmail: userProfile?.name,
+                        createdAt: serverTimestamp()
+                    })
+
+                    // Deduct stock
+                    const outfitRef = doc(db, FABRICS_COLLECTION, orderData.outfitId)
+                    await updateDoc(outfitRef, {
+                        [`stockBreakdown.${orderData.size}`]: increment(-qty),
+                        updatedAt: serverTimestamp()
+                    })
+
+                    // Log stock deduction
+                    await addDoc(collection(outfitRef, 'history'), {
+                        type: 'STOCK_DEDUCTION',
+                        amount: -qty,
+                        size: orderData.size,
+                        orderNumber: orderData.orderId,
+                        customerName: orderData.customerName || 'N/A',
+                        status: 'Batch Import',
+                        user: { name: userProfile?.displayName || userProfile?.name || 'System', email: userProfile?.email || '' },
+                        timestamp: serverTimestamp()
+                    })
+
+                    successCount++
+                    console.log(`✓ [${i + 1}/${ordersToSave.length}] Order ${orderData.orderId} saved`)
+
+                } catch (error) {
+                    const msg = `Order ${i + 1} (${orderData.orderId}): ${error.message}`
+                    errors.push(msg)
+                    failedCount++
+                    console.error(`✗ ${msg}`)
+                }
+            }
+
+            // Refresh orders
+            if (onDataChanged) await onDataChanged()
+
+            // Notify results
+            if (successCount > 0) {
+                notify.success(`✅ Saved ${successCount}/${ordersToSave.length} orders from Shopdeck batch`)
+            }
+            if (failedCount > 0) {
+                const errorMsg = errors.slice(0, 3).join('\n')
+                notify.error(`⚠️ ${failedCount} orders failed:\n${errorMsg}${errors.length > 3 ? '\n+more...' : ''}`)
+            }
+
+            return { success: successCount > 0, saved: successCount, failed: failedCount, errors }
+        } catch (error) {
+            console.error('Batch save error:', error)
+            notify.error('Batch save failed: ' + error.message)
+            return { success: false, saved: successCount, failed: failedCount, errors }
         } finally {
             setIsUploading(false)
         }
@@ -766,6 +1013,27 @@ export default function Orders({
                     </div>
                     <p className="text-3xl font-black text-white">{orderMetrics.pendingShipments}</p>
                     <p className="text-xs text-amber-200/80 mt-1">{orderMetrics.codPending} COD due</p>
+                </div>
+            </div>
+
+            {/* Admin Tools */}
+            <div className="bg-gradient-to-r from-orange-900 to-amber-900 border border-orange-600/60 rounded-lg p-4 mt-6 space-y-3">
+                <div className="flex items-center justify-between">
+                    <div>
+                        <p className="text-sm font-bold text-orange-100">Shopdeck Order Management</p>
+                        <p className="text-xs text-orange-200/70 mt-1">Renumber orders sequentially (Shpdck1001, 1002, ...)</p>
+                    </div>
+                    <button
+                        onClick={() => {
+                            setShowMigrationModal(true)
+                            setMigrationStats(null)
+                            setMigrationMode('renumber')
+                        }}
+                        className="px-4 py-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-bold rounded-lg shadow-lg transition-all text-sm whitespace-nowrap"
+                        title="Renumber Shopdeck orders sequentially (Shpdck1001, 1002, ...)"
+                    >
+                        🔄 Renumber Orders
+                    </button>
                 </div>
             </div>
 
@@ -1173,6 +1441,41 @@ export default function Orders({
                             </button>
                         </div>
 
+                        {stockOrderForm.platform === 'Shopdeck' && (
+                            <div className="space-y-3">
+                                <button
+                                    type="button"
+                                    onClick={() => setShowSlipUploader(true)}
+                                    className="w-full bg-gradient-to-r from-blue-500 to-blue-600 text-white font-semibold py-3 rounded-xl shadow-lg hover:shadow-blue-700/40 flex items-center justify-center gap-2"
+                                >
+                                    <Upload size={18} />
+                                    Upload Packing Slip (OCR)
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const qrOrder = {
+                                            orderId: stockOrderForm.orderNumber,
+                                            customerName: stockOrderForm.customerName,
+                                            phone: stockOrderForm.phone,
+                                            shippingAddress: stockOrderForm.address,
+                                            productName: selectedOutfit?.name || '',
+                                            skuId: selectedOutfit?.skuId || '',
+                                            quantity: parseInt(stockOrderForm.quantity) || 1,
+                                            totalPrice: `Rs. ${stockOrderForm.sellingPrice || '0'}`
+                                        }
+                                        setSelectedOrderForQR(qrOrder)
+                                        setShowQRGenerator(true)
+                                    }}
+                                    disabled={!stockOrderForm.orderNumber || !stockOrderForm.customerName}
+                                    className="w-full bg-gradient-to-r from-purple-500 to-purple-600 text-white font-semibold py-3 rounded-xl shadow-lg hover:shadow-purple-700/40 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                                >
+                                    <QrCode size={18} />
+                                    Generate QR Code for Shopdeck
+                                </button>
+                            </div>
+                        )}
+
                         {outfitsWithStock.length === 0 && (
                             <div className="text-center py-4 bg-emerald-900/60 border border-emerald-700/60 rounded-xl">
                                 <p className="text-xs text-emerald-100/80">No outfits in stock. Create production batches first!</p>
@@ -1501,6 +1804,154 @@ export default function Orders({
                     setBarcodeReviewData(null)
                 }}
             />
+
+            {/* Shopdeck QR Generator Modal */}
+            {showQRGenerator && selectedOrderForQR && (
+                <ShopdeckQRGenerator
+                    order={selectedOrderForQR}
+                    onClose={() => {
+                        setShowQRGenerator(false)
+                        setSelectedOrderForQR(null)
+                    }}
+                />
+            )}
+
+            {/* Shopdeck Packing Slip Uploader Modal */}
+            {showSlipUploader && (
+                <ShopdeckSlipUploader
+                    inventoryItems={inventoryItems}
+                    onExtractedData={(data) => {
+                        setStockOrderForm(prev => ({
+                            ...prev,
+                            orderNumber: data.orderId || prev.orderNumber,
+                            customerName: data.customerName || prev.customerName,
+                            phone: data.phone || prev.phone,
+                            address: data.shippingAddress || prev.address,
+                            outfitId: data.outfitId || prev.outfitId,
+                            size: data.size || prev.size,
+                            quantity: data.quantity.toString(),
+                            sellingPrice: data.totalPrice ? data.totalPrice.replace('Rs. ', '') : prev.sellingPrice,
+                            platform: 'Shopdeck'
+                        }))
+                        setShowSlipUploader(false)
+                        notify.success('Order data populated from packing slip ✓')
+                    }}
+                    onBatchSave={handleBatchSaveOrders}
+                    onClose={() => setShowSlipUploader(false)}
+                />
+            )}
+
+            {/* Shopdeck Order ID Migration Modal */}
+            {showMigrationModal && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                    <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6 space-y-4">
+                        <h2 className="text-xl font-bold text-gray-800">Shopdeck Order Management</h2>
+                        
+                        {!migrationStats ? (
+                            <>
+                                <p className="text-gray-600">Analyze Shopdeck orders and choose an action.</p>
+                                <button
+                                    onClick={handleCheckMigration}
+                                    disabled={isMigrating}
+                                    className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold py-2 rounded-lg transition-colors"
+                                >
+                                    {isMigrating ? 'Analyzing...' : 'Check Status'}
+                                </button>
+                            </>
+                        ) : (
+                            <>
+                                <div className="bg-gray-50 rounded-lg p-4 space-y-2 text-sm">
+                                    <p className="font-semibold text-gray-700 mb-3">Shopdeck Order Stats:</p>
+                                    <div className="flex justify-between">
+                                        <span className="text-gray-700">Total Shopdeck Orders:</span>
+                                        <span className="font-bold">{migrationStats.shopdeckTotal}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                        <span className="text-gray-700">Need Sequential Numbering:</span>
+                                        <span className="font-bold text-orange-600">{migrationStats.needsRenumbering}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                        <span className="text-gray-700">Already Correct Format:</span>
+                                        <span className="font-bold text-green-600">{migrationStats.alreadyCorrect}</span>
+                                    </div>
+                                    {migrationStats.duplicatesFound > 0 && (
+                                      <div className="flex justify-between border-t pt-2 mt-2">
+                                        <span className="text-red-700 font-semibold">⚠️ Duplicates Found:</span>
+                                        <span className="font-bold text-red-600">{migrationStats.duplicatesFound}</span>
+                                      </div>
+                                    )}
+                                    {migrationStats.gapsFound > 0 && (
+                                      <div className="flex justify-between">
+                                        <span className="text-red-700 font-semibold">⚠️ Missing Numbers (Gaps):</span>
+                                        <span className="font-bold text-red-600">{migrationStats.gapsFound}</span>
+                                      </div>
+                                    )}
+                                </div>
+
+                                {migrationStats.needsRenumbering > 0 && (
+                                    <div className="border-t pt-4">
+                                        <p className="text-xs font-semibold text-gray-600 mb-2">ACTION: Renumber Orders Chronologically</p>
+                                        <p className="text-xs text-gray-600 mb-3">Orders will be numbered Shpdck1001, 1002, etc. based on creation date (oldest first).</p>
+                                        <button
+                                            onClick={() => {
+                                                setMigrationMode('renumber')
+                                                handleExecuteMigration()
+                                            }}
+                                            disabled={isMigrating}
+                                            className="w-full bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-semibold py-2 rounded-lg transition-colors"
+                                        >
+                                            {isMigrating ? 'Renumbering...' : `Renumber ${migrationStats.needsRenumbering} Orders`}
+                                        </button>
+                                    </div>
+                                )}
+
+                                {migrationStats.duplicatesFound > 0 && (
+                                    <div className="border-t pt-4">
+                                        <p className="text-xs font-semibold text-red-600 mb-2">⚠️ DUPLICATES DETECTED!</p>
+                                        <p className="text-xs text-gray-600 mb-3">Found {migrationStats.duplicatesFound} duplicate order numbers. Click below to fix all duplicates and gaps.</p>
+                                        <button
+                                            onClick={async () => {
+                                                try {
+                                                    if (!window.confirm('This will re-number ALL Shopdeck orders sequentially (1001, 1002, 1003...) with no gaps or duplicates. Continue?')) {
+                                                        return
+                                                    }
+                                                    setIsMigrating(true)
+                                                    const db = getDb()
+                                                    const result = await cleanupShopdeckDuplicates(db)
+                                                    console.log('Cleanup result:', result)
+                                                    notify.success(`✅ Fixed: ${result.fixed} orders corrected, ${result.duplicatesFound} duplicates removed`)
+                                                    setShowMigrationModal(false)
+                                                    setMigrationStats(null)
+                                                    if (onDataChanged) await onDataChanged()
+                                                } catch (error) {
+                                                    console.error('Cleanup error:', error)
+                                                    notify.error('Cleanup failed: ' + error.message)
+                                                } finally {
+                                                    setIsMigrating(false)
+                                                }
+                                            }}
+                                            disabled={isMigrating}
+                                            className="w-full bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-semibold py-2 rounded-lg transition-colors"
+                                        >
+                                            {isMigrating ? 'Fixing...' : `Fix Duplicates & Gaps`}
+                                        </button>
+                                    </div>
+                                )}
+
+                                <button
+                                    onClick={() => {
+                                        setShowMigrationModal(false)
+                                        setMigrationStats(null)
+                                    }}
+                                    className="w-full bg-gray-300 hover:bg-gray-400 text-gray-800 font-semibold py-2 rounded-lg transition-colors"
+                                >
+                                    Close
+                                </button>
+                            </>
+                        )}
+                    </div>
+                </div>
+            )}
 
             {/* Batch Scan Queue */}
             {batchMode && scanQueue.length > 0 && (

@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react'
 
-export default function InventoryDetailModal({ item, soldCounts = {}, allOrders = [], onClose, onOpenEdit, onOpenStock, onViewHistory, onDelete }) {
+export default function InventoryDetailModal({ item, soldCounts = {}, allOrders = [], onClose, onOpenEdit, onOpenStock, onViewHistory, onDelete, onMoveToSamples }) {
     if (!item) return null
 
     const sizes = ['XS', 'S', 'M', 'L', 'XL', 'XXL']
@@ -274,6 +274,11 @@ export default function InventoryDetailModal({ item, soldCounts = {}, allOrders 
                         <button onClick={() => { onViewHistory && onViewHistory(item) }} className="w-full py-3 rounded-xl border border-emerald-600/60 bg-emerald-900/40 text-emerald-100 font-semibold hover:border-emerald-400/80 transition">
                             View Transaction History
                         </button>
+                        {item.type === 'outfit' && onMoveToSamples && (
+                            <button onClick={() => { onMoveToSamples(item) }} className="w-full py-3 rounded-xl border border-amber-500/60 bg-amber-900/30 text-amber-200 font-semibold hover:border-amber-400/80 transition flex items-center justify-center gap-2">
+                                🧪 Move to Samples
+                            </button>
+                        )}
                         <button onClick={() => { onDelete && onDelete(item) }} className="w-full py-3 rounded-xl bg-gradient-to-r from-rose-500 to-amber-500 text-white font-bold shadow-lg hover:shadow-rose-800/50 transition">
                             Delete Item
                         </button>
